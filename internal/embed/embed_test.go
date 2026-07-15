@@ -7,7 +7,7 @@ func TestDeterministic(t *testing.T) {
 	a := e.Embed("checkout payment failed timeout")
 	b := e.Embed("checkout payment failed timeout")
 	if Cosine(a, b) < 0.999 {
-		t.Fatal("cùng text phải cho vector giống hệt (deterministic)")
+		t.Fatal("identical text must produce an identical vector (deterministic)")
 	}
 }
 
@@ -20,7 +20,7 @@ func TestSimilarCloserThanDissimilar(t *testing.T) {
 	simScore := Cosine(q, similar)
 	disScore := Cosine(q, dissimilar)
 	if simScore <= disScore {
-		t.Fatalf("text chia sẻ token phải gần hơn: sim=%.3f dis=%.3f", simScore, disScore)
+		t.Fatalf("text sharing tokens must score closer: sim=%.3f dis=%.3f", simScore, disScore)
 	}
 }
 
@@ -28,6 +28,6 @@ func TestNormalized(t *testing.T) {
 	e := NewHash(64)
 	v := e.Embed("some log line with several tokens here")
 	if s := Cosine(v, v); s < 0.999 || s > 1.001 {
-		t.Fatalf("vector chuẩn hoá phải có |v|=1 (cos self=%.4f)", s)
+		t.Fatalf("a normalised vector must have |v|=1 (cos self=%.4f)", s)
 	}
 }

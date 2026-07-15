@@ -7,9 +7,8 @@ import (
 	"github.com/minhpnz/sentinellog/internal/model"
 )
 
-// TestNoSecretPersisted là INVARIANT TEST quan trọng nhất của service:
-// không một secret/PII nào được phép còn nguyên vẹn sau redaction.
-// Nếu test này fail, không được deploy.
+// TestNoSecretPersisted is the service's most important INVARIANT TEST: no
+// secret or PII may survive redaction intact. If this test fails, do not deploy.
 func TestNoSecretPersisted(t *testing.T) {
 	r := New()
 
@@ -17,7 +16,7 @@ func TestNoSecretPersisted(t *testing.T) {
 		"a@b.com",              // email
 		"AKIAIOSFODNN7EXAMPLE", // AWS access key
 		"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcDEF", // JWT
-		"4111111111111111",                            // Visa test card (Luhn hợp lệ)
+		"4111111111111111",                            // Visa test card (valid Luhn)
 		"wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY",    // high-entropy secret
 	}
 
@@ -41,8 +40,8 @@ func TestNoSecretPersisted(t *testing.T) {
 	}
 }
 
-// TestAllowlistedKeysNotOverRedacted: field an toàn (trace_id) không bị entropy
-// check redact nhầm — tránh phá hỏng khả năng correlate trace.
+// TestAllowlistedKeysNotOverRedacted: safe fields such as trace_id must not be
+// redacted by the entropy check, which would destroy trace correlation.
 func TestAllowlistedKeysNotOverRedacted(t *testing.T) {
 	r := New()
 	traceID := "7f3b2a1c9d8e4f5a6b7c8d9e0f1a2b3c" // hex, entropy cao
@@ -53,16 +52,16 @@ func TestAllowlistedKeysNotOverRedacted(t *testing.T) {
 	}
 	r.Redact(e)
 	if got, _ := e.Attrs["trace_id"].(string); got != traceID {
-		t.Errorf("trace_id bị redact nhầm: %q", got)
+		t.Errorf("trace_id was incorrectly redacted: %q", got)
 	}
 }
 
-// TestBenignTextUnchanged: câu chữ bình thường không bị đụng.
+// TestBenignTextUnchanged: ordinary prose is left alone.
 func TestBenignTextUnchanged(t *testing.T) {
 	r := New()
 	e := &model.LogEntry{Service: "api", Message: "user logged in successfully"}
 	r.Redact(e)
 	if e.Message != "user logged in successfully" {
-		t.Errorf("benign message bị đổi: %q", e.Message)
+		t.Errorf("a benign message was altered: %q", e.Message)
 	}
 }

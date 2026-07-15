@@ -25,12 +25,12 @@ func TestTenantScopingOnSearch(t *testing.T) {
 
 	acme, _ := s.Search(ctx, Query{TenantID: "acme"})
 	if len(acme) != 1 || acme[0].TenantID != "acme" {
-		t.Fatalf("acme search phải chỉ thấy log của acme, got %d", len(acme))
+		t.Fatalf("an acme search must only see acme logs, got %d", len(acme))
 	}
-	// INVARIANT: query không tenant => KHÔNG trả gì (fail closed).
+	// INVARIANT: a query without a tenant returns NOTHING (fail closed).
 	none, _ := s.Search(ctx, Query{TenantID: ""})
 	if len(none) != 0 {
-		t.Fatalf("query rỗng tenant phải trả 0, got %d", len(none))
+		t.Fatalf("a query with an empty tenant must return 0, got %d", len(none))
 	}
 }
 
@@ -40,7 +40,7 @@ func TestWriteBatchRejectsUnredacted(t *testing.T) {
 	unredacted := model.LogEntry{TenantID: "acme", Service: "x", Message: "secret", Redacted: false}
 	_ = s.WriteBatch(ctx, []model.LogEntry{unredacted})
 	if s.Written() != 0 {
-		t.Fatalf("entry chưa redact KHÔNG được persist, Written=%d", s.Written())
+		t.Fatalf("an unredacted entry must NEVER be persisted, Written=%d", s.Written())
 	}
 }
 
@@ -52,7 +52,7 @@ func TestSinceCheckpoint(t *testing.T) {
 	}
 	batch, _ := s.Since(ctx, 2, 10) // sau ID 2 => ID 3,4,5
 	if len(batch) != 3 || batch[0].ID != 3 {
-		t.Fatalf("Since(2) phải trả ID 3..5, got len=%d first=%d", len(batch), firstID(batch))
+		t.Fatalf("Since(2) must return IDs 3..5, got len=%d first=%d", len(batch), firstID(batch))
 	}
 }
 
@@ -61,10 +61,10 @@ func TestGetTenantChecked(t *testing.T) {
 	ctx := context.Background()
 	_ = s.WriteBatch(ctx, []model.LogEntry{red("acme", "s", "info", "m")}) // ID 1
 	if _, ok := s.Get("globex", 1); ok {
-		t.Fatal("LEAK: globex lấy được entry ID 1 của acme")
+		t.Fatal("LEAK: globex retrieved acme entry ID 1")
 	}
 	if _, ok := s.Get("acme", 1); !ok {
-		t.Fatal("acme phải lấy được entry của mình")
+		t.Fatal("acme must be able to retrieve its own entry")
 	}
 }
 
@@ -78,11 +78,11 @@ func TestSearchFilters(t *testing.T) {
 	})
 	res, _ := s.Search(ctx, Query{TenantID: "acme", Service: "checkout", Level: "error"})
 	if len(res) != 1 {
-		t.Fatalf("filter service+level phải trả 1, got %d", len(res))
+		t.Fatalf("filtering by service and level must return 1, got %d", len(res))
 	}
 	res2, _ := s.Search(ctx, Query{TenantID: "acme", Contains: "timeout"})
 	if len(res2) != 2 {
-		t.Fatalf("Contains=timeout phải trả 2, got %d", len(res2))
+		t.Fatalf("Contains=timeout must return 2, got %d", len(res2))
 	}
 }
 

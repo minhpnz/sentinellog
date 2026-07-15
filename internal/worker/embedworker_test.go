@@ -34,16 +34,16 @@ func TestEmbedWorkerProcessesAndCheckpoints(t *testing.T) {
 	w.tick(context.Background())
 
 	if vec.Len() != 3 {
-		t.Fatalf("phải embed 3 entry, vec.Len=%d", vec.Len())
+		t.Fatalf("3 entries must be embedded, vec.Len=%d", vec.Len())
 	}
 	if w.Checkpoint() != 3 {
-		t.Fatalf("checkpoint phải tiến tới ID 3, got %d", w.Checkpoint())
+		t.Fatalf("the checkpoint must advance to ID 3, got %d", w.Checkpoint())
 	}
 
-	// Tick lại mà không có entry mới => không làm gì thêm (idempotent theo offset).
+	// Ticking again with no new entries must do nothing: idempotent by offset.
 	w.tick(context.Background())
 	if vec.Len() != 3 {
-		t.Fatalf("tick không có entry mới không được embed thêm, vec.Len=%d", vec.Len())
+		t.Fatalf("a tick with no new entries must not embed anything more, vec.Len=%d", vec.Len())
 	}
 }
 
@@ -54,33 +54,33 @@ func TestEmbedWorkerDedupSameContent(t *testing.T) {
 	w := NewEmbed(s, embed.NewHash(64), vec, time.Millisecond, 100).
 		WithMetrics(Metrics{OnDedup: func() { dedup++ }})
 
-	// 5 entry NỘI DUNG GIỐNG HỆT => chỉ 1 vector, 4 lần dedup.
+	// 5 entries with IDENTICAL CONTENT must yield 1 vector and 4 dedups.
 	writeN(t, s, "acme", "identical message", 5)
 	w.tick(context.Background())
 
 	if vec.Len() != 1 {
-		t.Fatalf("nội dung trùng phải embed 1 lần, vec.Len=%d", vec.Len())
+		t.Fatalf("duplicate content must be embedded once, vec.Len=%d", vec.Len())
 	}
 	if dedup != 4 {
-		t.Fatalf("phải dedup 4 lần, got %d", dedup)
+		t.Fatalf("expected 4 dedups, got %d", dedup)
 	}
 }
 
 func TestEmbedWorkerResumable(t *testing.T) {
 	s := store.NewMem()
 	vec := vector.NewMem()
-	w := NewEmbed(s, embed.NewHash(64), vec, time.Millisecond, 2) // batch nhỏ
+	w := NewEmbed(s, embed.NewHash(64), vec, time.Millisecond, 2) // deliberately small batch
 
 	writeN(t, s, "acme", "msg-a distinct one", 1)
 	writeN(t, s, "acme", "msg-b distinct two", 1)
 	writeN(t, s, "acme", "msg-c distinct three", 1)
 
-	w.tick(context.Background()) // xử lý 2 (batch=2)
+	w.tick(context.Background()) // processes 2 (batch=2)
 	if w.Checkpoint() != 2 {
 		t.Fatalf("sau tick 1 checkpoint=2, got %d", w.Checkpoint())
 	}
-	w.tick(context.Background()) // xử lý nốt entry thứ 3
+	w.tick(context.Background()) // processes the remaining third entry
 	if w.Checkpoint() != 3 || vec.Len() != 3 {
-		t.Fatalf("phải resume và xử lý hết: checkpoint=%d vec=%d", w.Checkpoint(), vec.Len())
+		t.Fatalf("must resume and finish everything: checkpoint=%d vec=%d", w.Checkpoint(), vec.Len())
 	}
 }
