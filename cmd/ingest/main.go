@@ -181,3 +181,4 @@ func seedKB(k *kb.Store) {
 			"Fix: pgbouncer transaction pooling + reduced app-side pool. Detection: p99 latency alert.",
 		"checkout", "database")
 }
+

@@ -92,11 +92,3 @@ observing **cross-tenant isolation**: globex never sees acme's logs.
 ```bash
 go test ./...   # cross-tenant isolation, redaction, RAG refuse/cite, audit tamper, dedup, ...
 ```
-
-## Next steps (see `LESSONS.md` §7)
-
-- [ ] Replace MemStore with ClickHouse, and MemVectorStore with pgvector/Qdrant (HNSW).
-- [ ] Real embeddings (bge/e5) and a real LLM for RAG, keeping the grounding + citation contract.
-- [ ] Persist checkpoints, tokens and the audit log to a database; anchor the audit head to WORM storage.
-- [ ] OpenTelemetry tracing on the hot path; k6 load tests to fill in the numbers in `LESSONS.md` §5; chaos experiments.
-- [ ] Terraform + Helm; Grafana dashboards with burn-rate alerts.
