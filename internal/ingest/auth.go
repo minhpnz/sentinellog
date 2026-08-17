@@ -1,4 +1,4 @@
-// Package ingest: authentication per-tenant cho ingest API.
+// Package ingest provides per-tenant authentication for the ingest API.
 package ingest
 
 import (
@@ -7,16 +7,17 @@ import (
 	"encoding/hex"
 )
 
-// Authenticator ánh xạ token (đã hash) → tenantID.
+// Authenticator maps a hashed token to a tenant ID.
 //
-// Ta KHÔNG lưu token thô: chỉ lưu SHA-256 của token. Khi client gửi token, ta
-// hash rồi tra map. So sánh dùng subtle.ConstantTimeCompare để tránh timing
-// attack (thời gian so sánh không phụ thuộc vào việc trùng bao nhiêu byte đầu).
+// Raw tokens are NEVER stored: only the SHA-256 of each token is kept. When a
+// client presents a token we hash it and look it up. Comparison uses
+// subtle.ConstantTimeCompare to avoid timing attacks, so comparison time does
+// not depend on how many leading bytes matched.
 //
-// Production: nạp map này từ DB, hỗ trợ rotation, cache có TTL. Đây là bản demo
-// in-memory.
+// Production would load this map from a database with rotation support and a
+// TTL cache. This is an in-memory demo.
 type Authenticator struct {
-	// tokenHash(hex) -> tenantID
+	// tokenHash (hex) -> tenantID
 	byHash map[string]string
 }
 
@@ -24,12 +25,12 @@ func NewAuthenticator() *Authenticator {
 	return &Authenticator{byHash: make(map[string]string)}
 }
 
-// AddToken đăng ký một token thô cho tenant (chỉ dùng lúc seed/test).
+// AddToken registers a raw token for a tenant. Seeding and tests only.
 func (a *Authenticator) AddToken(rawToken, tenantID string) {
 	a.byHash[hashToken(rawToken)] = tenantID
 }
 
-// Authenticate trả tenantID nếu token hợp lệ.
+// Authenticate returns the tenant ID when the token is valid.
 func (a *Authenticator) Authenticate(rawToken string) (string, bool) {
 	if rawToken == "" {
 		return "", false
@@ -39,8 +40,9 @@ func (a *Authenticator) Authenticate(rawToken string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	// Xác nhận lại bằng constant-time compare trên chính hash (phòng thủ theo
-	// chiều sâu; lookup map đã dùng hash nên timing của token thô đã được che).
+	// Re-confirm with a constant-time compare on the hash itself: defence in
+	// depth. The map lookup already works on the hash, so the raw token's timing
+	// is already masked.
 	if subtle.ConstantTimeCompare([]byte(h), []byte(hashToken(rawToken))) != 1 {
 		return "", false
 	}

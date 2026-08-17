@@ -1,12 +1,13 @@
-// Package ingest: HTTP handler cho hot-path ingest.
+// Package ingest contains the HTTP handler for the ingest hot path.
 //
-// Thứ tự xử lý (mỗi bước là một quyết định senior):
-//  1. Auth per-tenant       — biết log này của ai (constant-time).
-//  2. Rate limit per-tenant — chống 1 tenant làm ngập cả hệ (fairness + DoS).
-//  3. Giới hạn body         — chống payload khổng lồ làm OOM.
-//  4. Decode + validate     — reject rác sớm.
-//  5. Gán tenant + REDACT   — strip PII/secret TRƯỚC khi vào buffer.
-//  6. Publish (shed nếu đầy)— backpressure: 503 thay vì treo.
+// The order of operations is deliberate, and each step exists for a reason:
+//  1. Per-tenant auth      — establish whose log this is (constant-time).
+//  2. Per-tenant rate limit— stop one tenant from flooding the system
+//     (fairness, and DoS resistance).
+//  3. Body size limit      — stop an enormous payload from causing an OOM.
+//  4. Decode and validate  — reject malformed input early.
+//  5. Assign tenant, REDACT— strip PII and secrets BEFORE anything is buffered.
+//  6. Publish, shed if full— backpressure: return 503 rather than hang.
 package ingest
 
 import (
@@ -51,10 +52,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3) Giới hạn body.
+	// 3) Body size limit.
 	r.Body = http.MaxBytesReader(w, r.Body, h.MaxBody)
 
-	// 4) Decode: chấp nhận 1 object hoặc mảng object.
+	// 4) Decode: accept either a single object or an array of objects.
 	entries, err := decodeEntries(r.Body)
 	if err != nil {
 		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
@@ -69,14 +70,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// 5) Gán tenant (KHÔNG tin field từ client) + timestamp + redact.
+		// 5) Assign the tenant (never trust the client-supplied field), stamp the
+		// timestamp, and redact.
 		e.TenantID = tenantID
 		if e.Timestamp.IsZero() {
 			e.Timestamp = time.Now().UTC()
 		}
-		h.Redactor.Redact(e) // sau bước này e.Redacted == true
+		h.Redactor.Redact(e) // after this, e.Redacted == true
 
-		// 6) Publish; nếu buffer đầy thì shed (không block).
+		// 6) Publish; shed rather than block when the buffer is full.
 		if err := h.Buffer.Publish(*e); err != nil {
 			shed++
 			continue
@@ -84,7 +86,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		accepted++
 	}
 
-	// Nếu shed toàn bộ → 503 để client retry; nếu một phần → 202 kèm thống kê.
+	// Everything shed means 503 so the client retries; a partial shed returns 202
+	// with the counts.
 	if accepted == 0 && shed > 0 {
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "overloaded: shedding load", http.StatusServiceUnavailable)
@@ -104,8 +107,7 @@ func bearerToken(r *http.Request) string {
 	return ""
 }
 
-// decodeEntries đọc hoặc một object, hoặc một mảng object. Dùng json.Decoder để
-// stream, và chặn field lạ để bắt lỗi schema sớm.
+// decodeEntries reads either a single object or an array of objects.
 func decodeEntries(body io.Reader) ([]model.LogEntry, error) {
 	data, err := io.ReadAll(body)
 	if err != nil {
