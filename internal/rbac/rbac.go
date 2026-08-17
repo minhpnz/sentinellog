@@ -1,14 +1,16 @@
-// Package rbac: kiểm soát truy cập theo vai trò cho tầng query.
+// Package rbac provides role-based access control for the query layer.
 //
-// Ba vai (least privilege tăng dần):
-//   - viewer:    đọc log + search trong tenant của mình.
-//   - responder: như viewer + chạy RAG/anomaly (thao tác "điều tra").
-//   - admin:     tất cả + xem audit, quản lý.
+// Three roles, in increasing privilege:
+//   - viewer:    read and search logs within their own tenant.
+//   - responder: viewer, plus RAG and anomaly access (investigation actions).
+//   - admin:     everything, plus audit access and administration.
 //
-// Thiết kế: quyền là tập hành động (capability), không phải if-else rải rác. Mọi
-// handler hỏi Can(role, action) ở MỘT chỗ → dễ audit, khó bỏ sót. Identity (ai +
-// tenant nào + role gì) do một Resolver cấp sau khi xác thực — tầng query KHÔNG
-// tự suy ra tenant từ input client (chống privilege escalation).
+// The design models permissions as a set of capabilities rather than if-else
+// checks scattered through handlers. Every handler asks Can(role, action) in ONE
+// place, which is easy to audit and hard to bypass by omission. The identity —
+// who, which tenant, which role — is issued by a resolver after authentication;
+// the query layer NEVER infers the tenant from client input, which is what stops
+// privilege escalation.
 package rbac
 
 type Role string
@@ -22,10 +24,10 @@ const (
 type Action string
 
 const (
-	ActionSearch    Action = "search"       // structured/semantic search
-	ActionRAG       Action = "rag_query"    // hỏi "why did X fail"
-	ActionAnomaly   Action = "read_anomaly" // xem anomaly feed
-	ActionViewAudit Action = "view_audit"   // xem sổ kiểm toán
+	ActionSearch    Action = "search"       // structured and semantic search
+	ActionRAG       Action = "rag_query"    // ask "why did X fail"
+	ActionAnomaly   Action = "read_anomaly" // read the anomaly feed
+	ActionViewAudit Action = "view_audit"   // read the audit log
 )
 
 var caps = map[Role]map[Action]bool{
@@ -34,7 +36,8 @@ var caps = map[Role]map[Action]bool{
 	Admin:     {ActionSearch: true, ActionRAG: true, ActionAnomaly: true, ActionViewAudit: true},
 }
 
-// Identity: kết quả sau khi xác thực. TenantID và Role KHÔNG đến từ client.
+// Identity is the result of authentication. TenantID and Role NEVER come from
+// the client.
 type Identity struct {
 	Actor    string
 	TenantID string
@@ -44,7 +47,7 @@ type Identity struct {
 func Can(role Role, a Action) bool {
 	m, ok := caps[role]
 	if !ok {
-		return false // vai lạ => fail closed
+		return false // unknown role: fail closed
 	}
 	return m[a]
 }

@@ -1,13 +1,15 @@
-// Package audit là sổ kiểm toán append-only, HASH-CHAINED (tamper-evident).
+// Package audit is an append-only, HASH-CHAINED audit log (tamper-evident).
 //
-// Mỗi bản ghi chứa hash của bản ghi trước (prev_hash) → tạo thành chuỗi giống
-// blockchain thu nhỏ. Sửa/xoá một bản ghi giữa chuỗi sẽ làm mọi hash sau đó
-// không khớp → Verify() phát hiện ngay. Đây là cách biến "audit không bị sửa"
-// thành thứ CHỨNG MINH được cho kiểm toán, thay vì tin vào quyền file.
+// Each record carries the hash of the previous one (prev_hash), forming a chain.
+// Modifying or removing a record in the middle breaks every hash after it, so
+// Verify() detects it immediately. This turns "the audit log was not altered"
+// into something PROVABLE to an auditor, rather than something resting on file
+// permissions.
 //
-// Lưu ý: hash-chain phát hiện SỬA và XOÁ-giữa-chuỗi, nhưng không tự chống
-// truncate (xoá đuôi). Production: định kỳ neo (anchor) hash cuối ra nơi WORM
-// (S3 Object Lock) — ta chừa hook AnchorHead cho việc đó.
+// Note the limits: a hash chain detects modification and mid-chain deletion, but
+// does not by itself prevent truncation of the tail. Production would
+// periodically anchor the head hash to WORM storage (S3 Object Lock) — the
+// AnchorHead hook exists for exactly that.
 package audit
 
 import (
@@ -23,7 +25,7 @@ type Record struct {
 	TenantID string
 	Actor    string
 	Action   string // "search" | "semantic_search" | "rag_query" | ...
-	Resource string // ví dụ query text hoặc doc id
+	Resource string // for example the query text or a document ID
 	At       time.Time
 	PrevHash string
 	Hash     string
@@ -43,7 +45,8 @@ func genesis() string {
 	return hex.EncodeToString(sum[:])
 }
 
-// Append thêm một bản ghi, nối vào chuỗi hash. Trả về hash mới (đầu chuỗi).
+// Append adds a record and links it into the hash chain, returning the record
+// with its new head hash.
 func (l *Log) Append(tenantID, actor, action, resource string) Record {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -58,8 +61,8 @@ func (l *Log) Append(tenantID, actor, action, resource string) Record {
 	return r
 }
 
-// Verify quét toàn chuỗi, trả (true, 0) nếu nguyên vẹn; (false, seq) tại bản ghi
-// đầu tiên bị hỏng.
+// Verify walks the whole chain, returning (true, 0) when intact, or (false, seq)
+// at the first corrupted record.
 func (l *Log) Verify() (bool, uint64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -76,7 +79,7 @@ func (l *Log) Verify() (bool, uint64) {
 	return true, 0
 }
 
-// Head trả hash cuối chuỗi — để neo ra WORM/định kỳ.
+// Head returns the final hash in the chain, for periodic anchoring to WORM storage.
 func (l *Log) Head() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -90,7 +93,7 @@ func (l *Log) Len() int {
 }
 
 func hashRecord(r Record) string {
-	// Hash trên mọi field NỘI DUNG + prev_hash (không gồm r.Hash).
+	// Hash over every CONTENT field plus prev_hash, excluding r.Hash itself.
 	data := fmt.Sprintf("%d|%s|%s|%s|%s|%d|%s",
 		r.Seq, r.TenantID, r.Actor, r.Action, r.Resource, r.At.UnixNano(), r.PrevHash)
 	sum := sha256.Sum256([]byte(data))
