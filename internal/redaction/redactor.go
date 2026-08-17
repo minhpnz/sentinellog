@@ -1,13 +1,14 @@
-// Package redaction strip PII và secret khỏi log TRƯỚC khi persist.
+// Package redaction strips PII and secrets from logs BEFORE they are persisted.
 //
-// Nguyên tắc bảo mật cốt lõi của SentinelLog: dữ liệu nhạy cảm không bao giờ
-// được chạm tới storage ở dạng thô. Redaction chạy đồng bộ trên hot path (chấp
-// nhận tốn một chút CPU) vì "leak rồi mới xoá" là không thể chấp nhận với log.
+// This is SentinelLog's core security property: sensitive data never reaches
+// storage in raw form. Redaction runs synchronously on the hot path — costing
+// some CPU — because "leak first, delete later" is not an acceptable posture for
+// logs.
 //
-// Hai lớp phát hiện:
-//  1. Pattern-based: các định dạng đã biết (email, thẻ, AWS key, JWT, private key).
-//  2. Entropy-based: token ngẫu nhiên chưa biết định dạng (API key, secret) —
-//     phát hiện bằng Shannon entropy cao trên chuỗi đủ dài.
+// Two detection layers:
+//  1. Pattern-based: known formats (email, card numbers, AWS keys, JWTs, private keys).
+//  2. Entropy-based: random tokens in unknown formats (API keys, secrets),
+//     detected via high Shannon entropy over a sufficiently long string.
 package redaction
 
 import (
@@ -25,18 +26,19 @@ type namedPattern struct {
 	re   *regexp.Regexp
 }
 
-// Redactor an toàn để dùng đồng thời từ nhiều goroutine (chỉ đọc sau khi New).
+// Redactor is safe for concurrent use across goroutines: it is read-only after New.
 type Redactor struct {
 	patterns         []namedPattern
 	entropyThreshold float64
 	minTokenLen      int
-	// allowKeys: các attr key được biết là an toàn, bỏ qua entropy check để
-	// tránh false-positive (vd: "trace_id", "request_id" nhìn như token nhưng
-	// không nhạy cảm). Pattern-based vẫn áp dụng.
+	// allowKeys lists attribute keys known to be safe, which skip the entropy
+	// check to avoid false positives — "trace_id" and "request_id" look like
+	// tokens but are not sensitive. Pattern-based redaction still applies.
 	allowKeys map[string]bool
 }
 
-// New tạo Redactor với bộ rule mặc định. Bổ sung pattern nội bộ công ty ở đây.
+// New builds a Redactor with the default rule set. Organisation-specific
+// patterns belong here.
 func New() *Redactor {
 	pats := []namedPattern{
 		{"email", regexp.MustCompile(`(?i)\b[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}\b`)},
@@ -45,12 +47,12 @@ func New() *Redactor {
 		{"bearer", regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._\-]{12,}\b`)},
 		{"credit_card", regexp.MustCompile(`\b(?:\d[ \-]?){13,19}\b`)},
 		{"private_key", regexp.MustCompile(`-----BEGIN[ A-Z]*PRIVATE KEY-----`)},
-		// Gán secret dạng key=value / key: value (password, token, secret, api_key...)
+		// Secrets assigned as key=value or key: value (password, token, secret, api_key, ...)
 		{"assigned_secret", regexp.MustCompile(`(?i)\b(pass(word)?|secret|token|api[_\-]?key|authorization)\b\s*[:=]\s*\S+`)},
 	}
 	return &Redactor{
 		patterns:         pats,
-		entropyThreshold: 3.5, // bits/char; token base64/hex ngẫu nhiên thường > 3.5
+		entropyThreshold: 3.5, // bits/char; random base64/hex tokens usually exceed 3.5
 		minTokenLen:      20,
 		allowKeys: map[string]bool{
 			"trace_id": true, "span_id": true, "request_id": true,
@@ -59,8 +61,9 @@ func New() *Redactor {
 	}
 }
 
-// Redact chỉnh sửa entry tại chỗ, đặt Redacted = true, trả về số lần thay thế.
-// LUÔN gọi trước khi đẩy vào buffer/writer.
+// Redact modifies the entry in place, sets Redacted = true, and returns the
+// number of replacements made. ALWAYS call this before publishing to the buffer
+// or writer.
 func (r *Redactor) Redact(e *model.LogEntry) int {
 	total := 0
 
@@ -71,9 +74,9 @@ func (r *Redactor) Redact(e *model.LogEntry) int {
 	for k, v := range e.Attrs {
 		s, ok := v.(string)
 		if !ok {
-			continue // chỉ redact string; số/bool bỏ qua
+			continue // only strings are redacted; numbers and booleans are skipped
 		}
-		// Pattern-based luôn chạy; entropy check bỏ qua với key đã allow.
+		// Pattern matching always runs; the entropy check is skipped for allowed keys.
 		red, cnt := r.redactStringWithEntropy(s, !r.allowKeys[k])
 		if cnt > 0 {
 			e.Attrs[k] = red
@@ -85,7 +88,7 @@ func (r *Redactor) Redact(e *model.LogEntry) int {
 	return total
 }
 
-// redactString áp dụng cả pattern lẫn entropy (dùng cho Message).
+// redactString applies both pattern and entropy detection; used for Message.
 func (r *Redactor) redactString(s string) (string, int) {
 	return r.redactStringWithEntropy(s, true)
 }
@@ -93,11 +96,11 @@ func (r *Redactor) redactString(s string) (string, int) {
 func (r *Redactor) redactStringWithEntropy(s string, useEntropy bool) (string, int) {
 	count := 0
 
-	// 1) Pattern-based.
+	// 1) Pattern-based detection.
 	for _, p := range r.patterns {
 		s = p.re.ReplaceAllStringFunc(s, func(match string) string {
-			// credit_card: giảm false-positive bằng Luhn (chuỗi số dài không phải
-			// lúc nào cũng là thẻ). Các pattern khác thay thẳng.
+			// For credit_card, use Luhn to cut false positives: a long run of digits
+			// is not always a card number. Other patterns replace unconditionally.
 			if p.name == "credit_card" && !looksLikeCard(match) {
 				return match
 			}
@@ -106,7 +109,7 @@ func (r *Redactor) redactStringWithEntropy(s string, useEntropy bool) (string, i
 		})
 	}
 
-	// 2) Entropy-based cho token lạ chưa khớp pattern nào.
+	// 2) Entropy-based detection for unfamiliar tokens no pattern matched.
 	if useEntropy {
 		s = redactHighEntropyTokens(s, r.minTokenLen, r.entropyThreshold, &count)
 	}
@@ -114,8 +117,9 @@ func (r *Redactor) redactStringWithEntropy(s string, useEntropy bool) (string, i
 	return s, count
 }
 
-// redactHighEntropyTokens quét từng "từ" (tách theo khoảng trắng và vài dấu),
-// thay thế token đủ dài và đủ ngẫu nhiên.
+// redactHighEntropyTokens scans word by word (splitting on whitespace and a few
+// punctuation characters) and replaces tokens that are both long enough and
+// random enough.
 func redactHighEntropyTokens(s string, minLen int, threshold float64, count *int) string {
 	fields := strings.FieldsFunc(s, func(r rune) bool {
 		return r == ' ' || r == '\t' || r == '=' || r == ':' || r == ',' ||
@@ -139,7 +143,8 @@ func redactHighEntropyTokens(s string, minLen int, threshold float64, count *int
 	return s
 }
 
-// looksLikeToken: chỉ gồm ký tự thường thấy trong secret encode (base64/hex/url).
+// looksLikeToken reports whether a string contains only characters common to
+// encoded secrets (base64, hex, URL-safe).
 func looksLikeToken(s string) bool {
 	for _, c := range s {
 		switch {
@@ -154,7 +159,8 @@ func looksLikeToken(s string) bool {
 	return true
 }
 
-// shannonEntropy trả về entropy (bits/char) — cao = ngẫu nhiên = có thể là secret.
+// shannonEntropy returns entropy in bits per character: higher means more
+// random, which suggests a secret.
 func shannonEntropy(s string) float64 {
 	if s == "" {
 		return 0
@@ -175,7 +181,7 @@ func shannonEntropy(s string) float64 {
 	return h
 }
 
-// looksLikeCard: lọc số, kiểm tra độ dài 13–19 và Luhn.
+// looksLikeCard extracts the digits and checks both length (13-19) and Luhn.
 func looksLikeCard(match string) bool {
 	digits := make([]int, 0, len(match))
 	for _, c := range match {

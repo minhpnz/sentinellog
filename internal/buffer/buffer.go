@@ -1,12 +1,14 @@
-// Package buffer là ranh giới backpressure giữa hot-path ingest và storage.
+// Package buffer is the backpressure boundary between the ingest hot path and
+// storage.
 //
-// Thiết kế: một channel có kích thước cố định (bounded). Khi buffer đầy nghĩa là
-// storage/worker phía sau không theo kịp — thay vì block vô hạn (làm ingest treo,
-// rồi lan ngược làm client treo, rồi OOM), ta CHỦ ĐỘNG shed tải: Publish trả về
-// ErrFull ngay, handler dịch thành HTTP 503 + Retry-After.
+// The design is a fixed-size (bounded) channel. A full buffer means the storage
+// and workers behind it are not keeping up. Rather than blocking indefinitely —
+// which would stall ingest, propagate back to stall clients, and eventually OOM
+// — we shed load deliberately: Publish returns ErrFull immediately and the
+// handler turns that into HTTP 503 with Retry-After.
 //
-// "Fail fast khi quá tải" là lựa chọn senior: mất một phần log có kiểm soát còn
-// hơn sập toàn hệ thống không kiểm soát.
+// Failing fast under overload is the deliberate choice here: losing a bounded
+// portion of logs beats losing the whole system in an uncontrolled way.
 package buffer
 
 import (
@@ -16,7 +18,7 @@ import (
 	"github.com/minhpnz/sentinellog/internal/model"
 )
 
-// ErrFull báo buffer đã đầy — caller nên shed (từ chối) request này.
+// ErrFull signals the buffer is full, so the caller should shed (reject) this request.
 var ErrFull = errors.New("ingest buffer full: shedding load")
 
 type Buffer struct {
@@ -29,8 +31,8 @@ func New(size int) *Buffer {
 	return &Buffer{ch: make(chan model.LogEntry, size)}
 }
 
-// Publish thử đưa entry vào buffer KHÔNG blocking.
-// Trả về ErrFull nếu buffer đầy (load shedding).
+// Publish attempts a NON-blocking send of the entry into the buffer.
+// Returns ErrFull when the buffer is full (load shedding).
 func (b *Buffer) Publish(e model.LogEntry) error {
 	select {
 	case b.ch <- e:
@@ -42,13 +44,14 @@ func (b *Buffer) Publish(e model.LogEntry) error {
 	}
 }
 
-// Consume trả channel để worker/writer đọc.
+// Consume returns the channel that workers and the writer read from.
 func (b *Buffer) Consume() <-chan model.LogEntry { return b.ch }
 
-// Close đóng channel (gọi sau khi mọi producer đã dừng) để writer drain nốt.
+// Close closes the channel. Call it once every producer has stopped, so the
+// writer can drain the remainder.
 func (b *Buffer) Close() { close(b.ch) }
 
-// Metrics để export ra Prometheus (buffer depth, tỉ lệ shed).
+// Metrics exported to Prometheus (buffer depth, shed ratio).
 func (b *Buffer) Depth() int       { return len(b.ch) }
 func (b *Buffer) Cap() int         { return cap(b.ch) }
 func (b *Buffer) Accepted() uint64 { return b.accepted.Load() }
