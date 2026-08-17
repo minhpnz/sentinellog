@@ -11,8 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/minhphan/sentinellog/internal/embed"
-	"github.com/minhphan/sentinellog/internal/vector"
+	"github.com/minhpnz/sentinellog/internal/embed"
+	"github.com/minhpnz/sentinellog/internal/vector"
 )
 
 type Kind string

@@ -1,3 +1,3 @@
-module github.com/minhphan/sentinellog
+module github.com/minhpnz/sentinellog
 
 go 1.22

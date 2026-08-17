@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/minhphan/sentinellog/internal/anomaly"
-	"github.com/minhphan/sentinellog/internal/rbac"
-	"github.com/minhphan/sentinellog/internal/store"
+	"github.com/minhpnz/sentinellog/internal/anomaly"
+	"github.com/minhpnz/sentinellog/internal/rbac"
+	"github.com/minhpnz/sentinellog/internal/store"
 )
 
 // IdentityResolver map token thô -> Identity. Trả false nếu token không hợp lệ.

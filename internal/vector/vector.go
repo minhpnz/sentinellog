@@ -19,7 +19,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/minhphan/sentinellog/internal/embed"
+	"github.com/minhpnz/sentinellog/internal/embed"
 )
 
 // Item là một vector kèm metadata tối thiểu để lọc và trích dẫn.

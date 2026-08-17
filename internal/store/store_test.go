@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/minhphan/sentinellog/internal/model"
+	"github.com/minhpnz/sentinellog/internal/model"
 )
 
 func red(tenant, svc, level, msg string) model.LogEntry {

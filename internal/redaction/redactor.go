@@ -15,7 +15,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/minhphan/sentinellog/internal/model"
+	"github.com/minhpnz/sentinellog/internal/model"
 )
 
 const placeholder = "[REDACTED]"

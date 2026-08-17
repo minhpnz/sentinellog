@@ -18,7 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/minhphan/sentinellog/internal/model"
+	"github.com/minhpnz/sentinellog/internal/model"
 )
 
 // Query là bộ lọc structured search. TenantID BẮT BUỘC (rỗng => không trả gì).

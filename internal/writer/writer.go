@@ -11,7 +11,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/minhphan/sentinellog/internal/model"
+	"github.com/minhpnz/sentinellog/internal/model"
 )
 
 // Store là đích ghi cuối (ClickHouse/Timescale/...). Tách interface để test

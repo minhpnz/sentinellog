@@ -1,24 +1,26 @@
 # SentinelLog — AI Log & Incident Intelligence Platform (Go)
 
-Bản **chạy được end-to-end** của SentinelLog: hot-path ingest + redaction, async
-workers (embedding + anomaly), và tầng query/AI (structured + semantic search +
-RAG có citation), tất cả **stdlib, không dependency ngoài** (dễ chạy/demo/đọc khi
-phỏng vấn). Thiết kế đầy đủ ở `../portfolio-projects.md` §Product 1; **bài học &
-flow pattern** để đi phỏng vấn ở `LESSONS.md`; **AI/ML core** ở `../core-ai-ml-interview.md`.
+An **end-to-end runnable** build of SentinelLog: hot-path ingest + redaction,
+async workers (embedding + anomaly detection), and a query/AI layer (structured
+search, semantic search, and RAG with citations) — all on the **standard library,
+with no external dependencies**, so it is easy to run, demo and read. Design
+notes and the reasoning behind each pattern live in `LESSONS.md`.
 
-Backend hiện dùng in-memory (store/vector) — interface đã tách sẵn để thay bằng
-ClickHouse/pgvector mà không đụng tầng trên (xem `LESSONS.md` §7).
+Storage backends are currently in-memory (store/vector). The interfaces are
+already separated so they can be swapped for ClickHouse/pgvector without touching
+the layers above (see `LESSONS.md` §7).
 
-## Chạy thử
+## Quick start
 
 ```bash
 cd sentinellog
-go mod tidy          # không có dependency ngoài — chỉ stdlib
-go run ./cmd/ingest  # server lắng nghe :8080 (đổi qua env SL_LISTEN_ADDR)
-go test ./...        # chạy test redaction ("no secret persisted")
+go mod tidy          # no external dependencies — standard library only
+go run ./cmd/ingest  # server listens on :8080 (override with SL_LISTEN_ADDR)
+go test ./...        # runs the redaction test ("no secret persisted")
 ```
 
-Gửi thử một log (token demo `dev-token` map sẵn tới tenant `acme` trong main.go):
+Send a test log (the demo token `dev-token` is mapped to tenant `acme` in
+`main.go`):
 
 ```bash
 curl -XPOST localhost:8080/v1/ingest \
@@ -27,10 +29,10 @@ curl -XPOST localhost:8080/v1/ingest \
   -d '{"service":"checkout","level":"error","message":"login failed for user a@b.com with key AKIAIOSFODNN7EXAMPLE"}'
 ```
 
-→ log được redact (email + AWS key) trước khi vào buffer, ghi vào store, và được
-embed async vào vector store.
+The log is redacted (email + AWS key) **before** it reaches the buffer, then
+written to the store and embedded asynchronously into the vector store.
 
-## Thử tầng query / AI
+## Trying the query / AI layer
 
 ```bash
 # Structured search (token acme-responder: tenant acme, role responder)
@@ -41,60 +43,60 @@ curl -s -XPOST localhost:8080/v1/search -H 'Authorization: Bearer acme-responder
 curl -s -XPOST localhost:8080/v1/semantic -H 'Authorization: Bearer acme-responder' \
   -d '{"query":"payment gateway timeout","k":3}'
 
-# RAG "why did X fail" — trả lời có CITATION, refuse nếu thiếu căn cứ
+# RAG "why did X fail" — answers carry CITATIONS, and refuse when evidence is thin
 curl -s -XPOST localhost:8080/v1/why -H 'Authorization: Bearer acme-responder' \
   -d '{"question":"why did checkout payment fail with timeout","k":3}'
 
-# Anomaly feed (cần role responder+)   |   Metrics Prometheus
+# Anomaly feed (requires responder role or above)   |   Prometheus metrics
 curl -s -XPOST localhost:8080/v1/anomalies -H 'Authorization: Bearer acme-responder' -d '{}'
 curl -s localhost:8080/metrics
 ```
 
-Token demo: `acme-viewer` (chỉ search), `acme-responder` (search+RAG+anomaly),
-`acme-admin`, `globex-admin` (tenant khác — dùng để thấy **cross-tenant isolation**:
-globex không bao giờ thấy log của acme).
+Demo tokens: `acme-viewer` (search only), `acme-responder` (search + RAG +
+anomalies), `acme-admin`, and `globex-admin` — a different tenant, useful for
+observing **cross-tenant isolation**: globex never sees acme's logs.
 
-## Bản đồ pattern (đọc theo thứ tự này → chi tiết ở `LESSONS.md`)
+## Pattern map (read in this order — details in `LESSONS.md`)
 
-**Hot path (đồng bộ):**
-| File | Pattern senior |
+**Hot path (synchronous):**
+| File | Pattern |
 |---|---|
-| `internal/redaction/` | **Redact-before-persist** + **invariant test** (regex + entropy) |
-| `internal/buffer/` | **Bounded buffer + load shedding** (backpressure) |
-| `internal/ratelimit/` | **Token bucket lazy-refill** per-tenant, monotonic clock |
+| `internal/redaction/` | **Redact before persist** + **invariant test** (regex + entropy) |
+| `internal/buffer/` | **Bounded buffer + load shedding** (backpressure boundary) |
+| `internal/ratelimit/` | **Token bucket with lazy refill**, per tenant, monotonic clock |
 | `internal/ingest/auth.go` | **Constant-time auth** + token hashing |
-| `internal/ingest/handler.go` | **Ingest hot path** đúng thứ tự |
+| `internal/ingest/handler.go` | **Ingest hot path**, ordered deliberately |
 | `internal/writer/` | **Batch writer + graceful drain** |
 
-**Storage + async (đuổi theo bằng checkpoint offset):**
-| File | Pattern senior |
+**Storage + async workers (catching up via checkpoint offsets):**
+| File | Pattern |
 |---|---|
-| `internal/store/` | **Tenant scoping cứng + fail-closed** (row-level security) |
-| `internal/embed/` | Embedding interface + HashEmbedder deterministic (offline) |
-| `internal/vector/` | **Vector store + TENANT PRE-FILTER** (không post-filter) |
+| `internal/store/` | **Hard tenant scoping, fail-closed** (row-level security) |
+| `internal/embed/` | Embedding interface + deterministic HashEmbedder (offline) |
+| `internal/vector/` | **Vector store with TENANT PRE-FILTER** (never post-filter) |
 | `internal/worker/embedworker.go` | **Resumable + idempotent (dedup) + DLQ** |
-| `internal/anomaly/` | **EWMA/z-score** baseline detection (cheap filter) |
-| `internal/kb/` | Incident knowledge base (runbook/postmortem) cho RAG |
+| `internal/anomaly/` | **EWMA / z-score** baseline detection (cheap first-pass filter) |
+| `internal/kb/` | Incident knowledge base (runbooks, postmortems) for RAG |
 
 **Query / AI + governance:**
-| File | Pattern senior |
+| File | Pattern |
 |---|---|
-| `internal/query/` | **RAG grounding + citation + refuse + untrusted-data separation** |
-| `internal/rbac/` | **Capability-based RBAC**, fail closed |
-| `internal/audit/` | **Hash-chained audit** (tamper-evident) |
-| `internal/metrics/` | Prometheus text, **không nổ cardinality**, histogram bucket |
-| `cmd/ingest/main.go` | **Graceful shutdown** toàn cục (producer→consumer drain) |
+| `internal/query/` | **RAG grounding + citation + refusal + untrusted-data separation** |
+| `internal/rbac/` | **Capability-based RBAC**, fails closed |
+| `internal/audit/` | **Hash-chained audit log** (tamper-evident) |
+| `internal/metrics/` | Prometheus text format, **bounded cardinality**, histogram buckets |
+| `cmd/ingest/main.go` | **Graceful shutdown** across the system (producer → consumer drain) |
 
-## Test (gồm invariant test bảo mật P0)
+## Tests (including the P0 security invariant tests)
 
 ```bash
-go test ./...   # cross-tenant isolation, redaction, RAG refuse/cite, audit tamper, dedup...
+go test ./...   # cross-tenant isolation, redaction, RAG refuse/cite, audit tamper, dedup, ...
 ```
 
-## Việc cần làm tiếp (xem `LESSONS.md` §7)
+## Next steps (see `LESSONS.md` §7)
 
-- [ ] Thay MemStore → ClickHouse; MemVectorStore → pgvector/Qdrant (HNSW).
-- [ ] Embedding thật (bge/e5) + LLM thật cho RAG (giữ hợp đồng grounding+citation).
-- [ ] Persist checkpoint/token/audit ra DB; neo audit head ra WORM.
-- [ ] OpenTelemetry trace hot path; k6 load test → điền số vào `LESSONS.md` §5; chaos.
-- [ ] Terraform + Helm; Grafana dashboard + burn-rate alert.
+- [ ] Replace MemStore with ClickHouse, and MemVectorStore with pgvector/Qdrant (HNSW).
+- [ ] Real embeddings (bge/e5) and a real LLM for RAG, keeping the grounding + citation contract.
+- [ ] Persist checkpoints, tokens and the audit log to a database; anchor the audit head to WORM storage.
+- [ ] OpenTelemetry tracing on the hot path; k6 load tests to fill in the numbers in `LESSONS.md` §5; chaos experiments.
+- [ ] Terraform + Helm; Grafana dashboards with burn-rate alerts.

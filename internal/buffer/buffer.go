@@ -13,7 +13,7 @@ import (
 	"errors"
 	"sync/atomic"
 
-	"github.com/minhphan/sentinellog/internal/model"
+	"github.com/minhpnz/sentinellog/internal/model"
 )
 
 // ErrFull báo buffer đã đầy — caller nên shed (từ chối) request này.

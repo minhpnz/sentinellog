@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/minhphan/sentinellog/internal/model"
+	"github.com/minhpnz/sentinellog/internal/model"
 )
 
 // TestNoSecretPersisted là INVARIANT TEST quan trọng nhất của service:

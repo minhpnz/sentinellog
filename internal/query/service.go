@@ -12,13 +12,13 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/minhphan/sentinellog/internal/audit"
-	"github.com/minhphan/sentinellog/internal/embed"
-	"github.com/minhphan/sentinellog/internal/kb"
-	"github.com/minhphan/sentinellog/internal/model"
-	"github.com/minhphan/sentinellog/internal/rbac"
-	"github.com/minhphan/sentinellog/internal/store"
-	"github.com/minhphan/sentinellog/internal/vector"
+	"github.com/minhpnz/sentinellog/internal/audit"
+	"github.com/minhpnz/sentinellog/internal/embed"
+	"github.com/minhpnz/sentinellog/internal/kb"
+	"github.com/minhpnz/sentinellog/internal/model"
+	"github.com/minhpnz/sentinellog/internal/rbac"
+	"github.com/minhpnz/sentinellog/internal/store"
+	"github.com/minhpnz/sentinellog/internal/vector"
 )
 
 type Service struct {

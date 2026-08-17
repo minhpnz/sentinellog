@@ -23,10 +23,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/minhphan/sentinellog/internal/embed"
-	"github.com/minhphan/sentinellog/internal/model"
-	"github.com/minhphan/sentinellog/internal/store"
-	"github.com/minhphan/sentinellog/internal/vector"
+	"github.com/minhpnz/sentinellog/internal/embed"
+	"github.com/minhpnz/sentinellog/internal/model"
+	"github.com/minhpnz/sentinellog/internal/store"
+	"github.com/minhpnz/sentinellog/internal/vector"
 )
 
 // Metrics là hook để worker báo số liệu ra ngoài mà không phụ thuộc package metrics.

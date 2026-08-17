@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/minhphan/sentinellog/internal/rbac"
+	"github.com/minhpnz/sentinellog/internal/rbac"
 )
 
 // ErrForbidden: Identity không đủ quyền cho hành động.

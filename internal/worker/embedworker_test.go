@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/minhphan/sentinellog/internal/embed"
-	"github.com/minhphan/sentinellog/internal/model"
-	"github.com/minhphan/sentinellog/internal/store"
-	"github.com/minhphan/sentinellog/internal/vector"
+	"github.com/minhpnz/sentinellog/internal/embed"
+	"github.com/minhpnz/sentinellog/internal/model"
+	"github.com/minhpnz/sentinellog/internal/store"
+	"github.com/minhpnz/sentinellog/internal/vector"
 )
 
 func writeN(t *testing.T, s *store.MemStore, tenant, msg string, n int) {

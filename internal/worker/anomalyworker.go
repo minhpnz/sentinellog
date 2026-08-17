@@ -10,8 +10,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/minhphan/sentinellog/internal/anomaly"
-	"github.com/minhphan/sentinellog/internal/store"
+	"github.com/minhpnz/sentinellog/internal/anomaly"
+	"github.com/minhpnz/sentinellog/internal/store"
 )
 
 type AnomalyWorker struct {

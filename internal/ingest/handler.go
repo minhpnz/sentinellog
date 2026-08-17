@@ -17,10 +17,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/minhphan/sentinellog/internal/buffer"
-	"github.com/minhphan/sentinellog/internal/model"
-	"github.com/minhphan/sentinellog/internal/ratelimit"
-	"github.com/minhphan/sentinellog/internal/redaction"
+	"github.com/minhpnz/sentinellog/internal/buffer"
+	"github.com/minhpnz/sentinellog/internal/model"
+	"github.com/minhpnz/sentinellog/internal/ratelimit"
+	"github.com/minhpnz/sentinellog/internal/redaction"
 )
 
 type Handler struct {
