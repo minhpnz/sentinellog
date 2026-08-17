@@ -1,13 +1,16 @@
-// Package store là log store có TENANT SCOPING bắt buộc.
+// Package store is the log store, with MANDATORY TENANT SCOPING.
 //
-// Đây là nơi hiện thực invariant an ninh số 1 của SentinelLog ở tầng đọc:
-// **mọi truy vấn PHẢI kèm tenantID, và store không bao giờ trả entry của tenant
-// khác**. Ta ép điều này bằng chữ ký hàm (không có API nào đọc "tất cả tenant")
-// chứ không dựa vào lập trình viên nhớ filter — giống row-level security.
+// This is where SentinelLog's primary security invariant is enforced on the read
+// path: **every query MUST carry a tenant ID, and the store never returns another
+// tenant's entries**. That is enforced through the function signatures — there is
+// no API that reads across all tenants — rather than relying on a developer
+// remembering to filter. The same idea as row-level security.
 //
-// MemStore là bản in-memory để chạy/test không cần hạ tầng. Interface LogStore
-// tách sẵn để thay bằng ClickHouse (cột hoá, nén, ORDER BY (tenant_id, service,
-// ts)) mà không đụng tầng trên. Batch insert của ClickHouse map thẳng WriteBatch.
+// MemStore is the in-memory implementation, so the system runs and tests without
+// infrastructure. The LogStore interface is separated so it can be swapped for
+// ClickHouse (columnar, compressed, ORDER BY (tenant_id, service, ts)) without
+// touching the layers above; ClickHouse batch inserts map directly onto
+// WriteBatch.
 package store
 
 import (
@@ -21,46 +24,49 @@ import (
 	"github.com/minhpnz/sentinellog/internal/model"
 )
 
-// Query là bộ lọc structured search. TenantID BẮT BUỘC (rỗng => không trả gì).
+// Query is the structured search filter. TenantID is MANDATORY; empty returns nothing.
 type Query struct {
-	TenantID string // bắt buộc — scope cứng
-	Service  string // "" = mọi service
-	Level    string // "" = mọi level
-	Contains string // substring match trên message (rỗng = bỏ qua)
+	TenantID string // mandatory — hard scope
+	Service  string // "" matches every service
+	Level    string // "" matches every level
+	Contains string // substring match on the message ("" skips the check)
 	Since    time.Time
 	Until    time.Time
-	Limit    int // 0 => mặc định 100
+	Limit    int // 0 defaults to 100
 }
 
-// LogStore là đích ghi + đọc log. Cùng interface với writer.Store (WriteBatch).
+// LogStore is the read and write target for logs. It shares WriteBatch with
+// writer.Store.
 type LogStore interface {
 	WriteBatch(ctx context.Context, batch []model.LogEntry) error
 	Search(ctx context.Context, q Query) ([]model.StoredEntry, error)
-	// Since đọc các entry có ID > afterID (dùng cho async worker checkpoint).
+	// Since reads entries with ID > afterID, used for async worker checkpoints.
 	Since(ctx context.Context, afterID uint64, limit int) ([]model.StoredEntry, error)
-	// Get lấy 1 entry theo ID, có kiểm tra tenant (nil nếu khác tenant/không có).
+	// Get fetches one entry by ID with a tenant check; missing or cross-tenant
+	// lookups return false.
 	Get(tenantID string, id uint64) (model.StoredEntry, bool)
 }
 
-// MemStore: lưu trong RAM, an toàn concurrent. Đủ để demo/test và load test nhỏ.
+// MemStore keeps entries in RAM and is safe for concurrent use. Sufficient for
+// demos, tests and small load tests.
 type MemStore struct {
 	mu      sync.RWMutex
-	entries []model.StoredEntry // append-only, ID = index+1
+	entries []model.StoredEntry // append-only; ID = index+1
 	nextID  atomic.Uint64
 	written atomic.Uint64
 }
 
 func NewMem() *MemStore { return &MemStore{} }
 
-// WriteBatch persist một batch. Ép invariant "không ghi entry chưa redact" (chốt
-// chặn thứ hai, sau writer) — defense in depth.
+// WriteBatch persists a batch. It enforces the "never store an unredacted entry"
+// invariant a second time, after the writer — defence in depth.
 func (s *MemStore) WriteBatch(_ context.Context, batch []model.LogEntry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, e := range batch {
 		if !e.Redacted {
-			// Không panic (không muốn 1 entry lỗi giết cả batch), nhưng tuyệt đối
-			// không persist secret. Bỏ qua + đếm để metric/alert bắt được.
+			// Do not panic: one bad entry should not kill the batch. But a secret must
+			// never be persisted, so skip it and count it so metrics and alerts catch it.
 			continue
 		}
 		id := s.nextID.Add(1)
@@ -70,10 +76,11 @@ func (s *MemStore) WriteBatch(_ context.Context, batch []model.LogEntry) error {
 	return nil
 }
 
-// Search: structured query, LUÔN scope theo tenant. Duyệt ngược (mới nhất trước).
+// Search runs a structured query, ALWAYS scoped to a tenant, walking backwards
+// so the newest entries come first.
 func (s *MemStore) Search(_ context.Context, q Query) ([]model.StoredEntry, error) {
 	if q.TenantID == "" {
-		// Fail closed: không tenant => không dữ liệu (không bao giờ "trả tất cả").
+		// Fail closed: no tenant means no data. There is never a "return everything" path.
 		return nil, nil
 	}
 	limit := q.Limit
@@ -101,7 +108,7 @@ func (s *MemStore) Since(_ context.Context, afterID uint64, limit int) ([]model.
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]model.StoredEntry, 0, limit)
-	// entries sắp theo ID tăng dần; tìm điểm bắt đầu bằng binary search.
+	// Entries are ordered by ascending ID, so binary search finds the start point.
 	start := sort.Search(len(s.entries), func(i int) bool {
 		return s.entries[i].ID > afterID
 	})
@@ -118,7 +125,7 @@ func (s *MemStore) Get(tenantID string, id uint64) (model.StoredEntry, bool) {
 		return model.StoredEntry{}, false
 	}
 	e := s.entries[id-1]        // ID = index+1
-	if e.TenantID != tenantID { // scope check — không lộ chéo tenant
+	if e.TenantID != tenantID { // scope check — no cross-tenant disclosure
 		return model.StoredEntry{}, false
 	}
 	return e, true

@@ -1,18 +1,19 @@
-// Package vector là vector store cho semantic search.
+// Package vector is the vector store backing semantic search.
 //
-// ĐIỂM BẢO MẬT CỐT LÕI: search luôn **PRE-FILTER theo tenant TRƯỚC khi tính
-// similarity**, không bao giờ post-filter. Vì sao quan trọng (câu hỏi phỏng vấn):
-// nếu tính similarity trên toàn bộ index rồi mới lọc tenant ở cuối, thì
-//  1. có nguy cơ rò rỉ qua ranking/timing/số lượng kết quả, và
-//  2. một bug ở bước lọc cuối là leak chéo tenant.
+// THE CORE SECURITY PROPERTY: search always **PRE-FILTERS by tenant BEFORE
+// computing similarity**, and never post-filters. Why that matters: computing
+// similarity across the whole index and only filtering by tenant at the end
+//  1. risks leaking through ranking, timing and the result count, and
+//  2. makes any bug in that final filter a cross-tenant breach.
 //
-// Pre-filter biến "không thấy tenant khác" thành bất biến cấu trúc, có test tự
-// động (xem vector_test.go) — không dựa vào review.
+// Pre-filtering turns "you never see another tenant" into a structural invariant
+// covered by automated tests (see vector_test.go), rather than something that
+// depends on code review catching it.
 //
-// MemVectorStore duyệt tuyến tính (brute-force cosine). Đủ cho demo/test. Ở
-// production thay bằng pgvector/Qdrant với ANN index (HNSW) — interface giữ
-// nguyên; khi đó tenant pre-filter map thành `WHERE tenant_id = $1` chạy TRƯỚC
-// toán tử vector, hoặc partition index theo tenant.
+// MemVectorStore scans linearly (brute-force cosine), which is fine for demos and
+// tests. Production would use pgvector or Qdrant with an ANN index (HNSW) behind
+// the same interface; there, the tenant pre-filter becomes a `WHERE tenant_id = $1`
+// evaluated BEFORE the vector operator, or a per-tenant index partition.
 package vector
 
 import (
@@ -22,16 +23,16 @@ import (
 	"github.com/minhpnz/sentinellog/internal/embed"
 )
 
-// Item là một vector kèm metadata tối thiểu để lọc và trích dẫn.
+// Item is a vector plus the minimum metadata needed to filter and cite it.
 type Item struct {
 	TenantID   string
-	Ref        string // con trỏ về nguồn để cite: "log:123" hoặc "kb:runbook:5"
+	Ref        string // pointer back to the source for citation: "log:123" or "kb:runbook:5"
 	SourceType string // "log" | "runbook" | "postmortem"
 	Vec        []float32
-	Version    string // embedding spec version (cho reindex)
+	Version    string // embedding spec version, used for reindexing
 }
 
-// Hit là kết quả search kèm điểm.
+// Hit is a search result with its score.
 type Hit struct {
 	Item
 	Score float32
@@ -39,16 +40,16 @@ type Hit struct {
 
 type Store interface {
 	Upsert(it Item)
-	// Search PRE-FILTER theo tenantID rồi trả top-k theo cosine. Rỗng tenantID
-	// => không trả gì (fail closed).
+	// Search PRE-FILTERS by tenant ID, then returns the top-k by cosine
+	// similarity. An empty tenant ID returns nothing (fail closed).
 	Search(tenantID string, query []float32, k int) []Hit
 	Len() int
 }
 
 type MemVectorStore struct {
 	mu    sync.RWMutex
-	items map[string][]Item // key = tenantID  → PHÂN VÙNG cứng theo tenant
-	byRef map[string]bool   // dedup theo (tenant+ref) để idempotent upsert
+	items map[string][]Item // keyed by tenantID — a hard partition per tenant
+	byRef map[string]bool   // dedup on (tenant + ref) to keep upserts idempotent
 }
 
 func NewMem() *MemVectorStore {
@@ -63,7 +64,7 @@ func (s *MemVectorStore) Upsert(it Item) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.byRef[key] {
-		return // đã có → idempotent, không nhân đôi (dedup)
+		return // already present: idempotent, no duplicate
 	}
 	s.byRef[key] = true
 	s.items[it.TenantID] = append(s.items[it.TenantID], it)
@@ -77,7 +78,8 @@ func (s *MemVectorStore) Search(tenantID string, query []float32, k int) []Hit {
 		k = 5
 	}
 	s.mu.RLock()
-	// CHỈ lấy phân vùng của tenant này — pre-filter cấu trúc, không đụng tenant khác.
+	// Read ONLY this tenant's partition — a structural pre-filter that never
+	// touches another tenant's data.
 	part := s.items[tenantID]
 	hits := make([]Hit, 0, len(part))
 	for _, it := range part {
