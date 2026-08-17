@@ -1,20 +1,24 @@
-// Package worker: embedding worker CHẠY ASYNC, tách khỏi hot-path ingest.
+// Package worker contains the ASYNC embedding worker, kept off the ingest hot path.
 //
-// Vì sao tách: embedding là việc NẶNG (gọi model). Nếu làm đồng bộ trên ingest,
-// throughput ingest tụt theo tốc độ model. Nên hot-path chỉ ghi log; worker này
-// chạy nền, "đuổi theo" bằng CHECKPOINT OFFSET trên store (giống consumer đọc
-// theo offset của Kafka, hoặc `SELECT ... WHERE id > :last ... SKIP LOCKED`).
+// Why it is separate: embedding is expensive work (a model call). Doing it
+// synchronously during ingest would cap ingest throughput at the model's speed.
+// So the hot path only writes logs, and this worker runs in the background,
+// catching up via a CHECKPOINT OFFSET over the store — the same shape as a Kafka
+// consumer reading by offset, or `SELECT ... WHERE id > :last ... SKIP LOCKED`.
 //
-// Ba pattern senior nhúng ở đây:
-//  1. Resumable qua checkpoint: nhớ lastID; crash rồi bật lại thì tiếp tục, không
-//     mất và không cần queue riêng. (Đơn giản hoá: checkpoint in-memory; production
-//     persist lastID vào DB để sống qua restart.)
-//  2. Idempotent + dedup: cùng nội dung log → cùng ContentHash → embed một lần
-//     (dedup ở đây + dedup theo ref ở vector store) → replay an toàn.
-//  3. DLQ: item embed lỗi được đẩy sang dead-letter thay vì chặn cả pipeline
-//     hoặc mất lặng lẽ — có thể điều tra/replay sau.
+// Three patterns are embedded here:
+//  1. Resumable via checkpoint: remember lastID, so a crash and restart continues
+//     where it left off, with no loss and no separate queue. (Simplified: the
+//     checkpoint is in memory; production would persist lastID to a database so it
+//     survives restarts.)
+//  2. Idempotent and deduplicated: identical log content produces the same
+//     ContentHash and is embedded once — deduped here, and again by ref in the
+//     vector store — which makes replay safe.
+//  3. Dead-letter queue: an item that fails to embed goes to the DLQ rather than
+//     blocking the pipeline or disappearing silently, so it can be investigated
+//     and replayed later.
 //
-// Worker scale theo QUEUE LAG (store.lastID - worker.lastID), không theo CPU.
+// The worker scales on QUEUE LAG (store.lastID − worker.lastID), not on CPU.
 package worker
 
 import (
@@ -29,7 +33,8 @@ import (
 	"github.com/minhpnz/sentinellog/internal/vector"
 )
 
-// Metrics là hook để worker báo số liệu ra ngoài mà không phụ thuộc package metrics.
+// Metrics is the hook the worker reports through, so it does not depend on the
+// metrics package.
 type Metrics struct {
 	OnEmbedded func(n int)
 	OnDedup    func()
@@ -53,7 +58,7 @@ type EmbedWorker struct {
 
 	mu     sync.Mutex
 	lastID uint64
-	seen   map[string]bool // content hash đã xử lý (dedup)
+	seen   map[string]bool // content hashes already processed (dedup)
 	dlq    []DeadLetter
 }
 
@@ -72,14 +77,15 @@ func NewEmbed(s store.LogStore, e embed.Embedder, v vector.Store, poll time.Dura
 
 func (w *EmbedWorker) WithMetrics(m Metrics) *EmbedWorker { w.m = m; return w }
 
-// Run poll store cho tới khi ctx bị cancel. Mỗi vòng xử lý tối đa `batch` entry.
+// Run polls the store until ctx is cancelled, handling at most `batch` entries
+// per pass.
 func (w *EmbedWorker) Run(ctx context.Context) {
 	t := time.NewTicker(w.poll)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			// Cố xử lý nốt một lượt trước khi thoát (best-effort drain).
+			// Make one best-effort pass before exiting, to drain what is pending.
 			w.tick(context.WithoutCancel(ctx))
 			return
 		case <-t.C:
@@ -88,7 +94,8 @@ func (w *EmbedWorker) Run(ctx context.Context) {
 	}
 }
 
-// tick xử lý một batch entry mới kể từ checkpoint. Public-ish cho test gọi trực tiếp.
+// tick processes one batch of entries newer than the checkpoint. Kept callable
+// directly from tests.
 func (w *EmbedWorker) tick(ctx context.Context) {
 	w.mu.Lock()
 	from := w.lastID
@@ -112,8 +119,9 @@ func (w *EmbedWorker) tick(ctx context.Context) {
 		embedded++
 	}
 
-	// Advance checkpoint tới ID cuối đã ĐỌC (kể cả item vào DLQ — đã xử lý xong,
-	// không đọc lại; DLQ giữ chúng để replay có chủ đích).
+	// Advance the checkpoint to the last ID READ, including items sent to the DLQ:
+	// those are done and should not be re-read, and the DLQ holds them for a
+	// deliberate replay.
 	last := entries[len(entries)-1].ID
 	w.mu.Lock()
 	if last > w.lastID {
@@ -135,7 +143,7 @@ func (w *EmbedWorker) process(e model.StoredEntry) error {
 		if w.m.OnDedup != nil {
 			w.m.OnDedup()
 		}
-		return nil // idempotent: nội dung này đã embed
+		return nil // idempotent: this content is already embedded
 	}
 	w.seen[h] = true
 	w.mu.Unlock()
@@ -160,7 +168,8 @@ func (w *EmbedWorker) pushDLQ(e model.StoredEntry, err error) {
 	}
 }
 
-// Lag = số entry chưa xử lý (store head - checkpoint). Dùng để scale/alert.
+// Lag is the number of unprocessed entries (store head − checkpoint), used for
+// scaling and alerting.
 func (w *EmbedWorker) Lag(ctx context.Context) uint64 {
 	w.mu.Lock()
 	from := w.lastID
@@ -179,7 +188,7 @@ func (w *EmbedWorker) DLQLen() int {
 	return len(w.dlq)
 }
 
-// Checkpoint trả lastID hiện tại (cho test/observability).
+// Checkpoint returns the current lastID, for tests and observability.
 func (w *EmbedWorker) Checkpoint() uint64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()

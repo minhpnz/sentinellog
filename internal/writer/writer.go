@@ -1,9 +1,12 @@
-// Package writer là hot-path writer: gom log thành batch rồi ghi xuống store.
+// Package writer is the hot-path writer: it groups logs into batches and writes
+// them to the store.
 //
-// Tách khỏi ingest handler (qua buffer) để handler trả về nhanh, không chờ I/O.
-// Batch theo CẢ HAI điều kiện — đủ size HOẶC hết interval — tuỳ cái nào đến trước
-// (giống log shipper / metrics agent). Khi context bị cancel (shutdown), drain
-// nốt những gì còn trong buffer rồi flush lần cuối để không mất data.
+// It is separated from the ingest handler by the buffer so the handler can return
+// quickly without waiting on I/O. Batches flush on EITHER condition — reaching
+// the size limit OR the interval elapsing — whichever comes first, the same shape
+// as a log shipper or metrics agent. When the context is cancelled at shutdown,
+// it drains whatever remains in the buffer and flushes one final time so nothing
+// is lost.
 package writer
 
 import (
@@ -14,8 +17,9 @@ import (
 	"github.com/minhpnz/sentinellog/internal/model"
 )
 
-// Store là đích ghi cuối (ClickHouse/Timescale/...). Tách interface để test
-// và để đổi backend không đụng writer.
+// Store is the final write target (ClickHouse, Timescale, ...). The interface is
+// separated both for testing and so the backend can change without touching the
+// writer.
 type Store interface {
 	WriteBatch(ctx context.Context, batch []model.LogEntry) error
 }
@@ -30,8 +34,8 @@ func NewBatch(store Store, size int, interval time.Duration) *BatchWriter {
 	return &BatchWriter{store: store, size: size, interval: interval}
 }
 
-// Run đọc từ in cho tới khi channel đóng HOẶC ctx bị cancel, flush theo
-// size/interval, và drain phần còn lại trước khi thoát.
+// Run reads from in until the channel closes OR ctx is cancelled, flushing on
+// size and interval, and draining the remainder before it exits.
 func (w *BatchWriter) Run(ctx context.Context, in <-chan model.LogEntry) {
 	batch := make([]model.LogEntry, 0, w.size)
 	ticker := time.NewTicker(w.interval)
@@ -41,12 +45,13 @@ func (w *BatchWriter) Run(ctx context.Context, in <-chan model.LogEntry) {
 		if len(batch) == 0 {
 			return
 		}
-		// Dùng context tách khỏi cancel để flush cuối vẫn hoàn tất khi shutdown.
+		// Use a context detached from cancellation so the final flush still completes
+		// during shutdown.
 		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
 		if err := w.store.WriteBatch(fctx, batch); err != nil {
 			log.Printf("writer: flush failed for %d entries: %v", len(batch), err)
-			// TODO: đẩy sang DLQ thay vì bỏ; hiện log-and-drop.
+			// TODO: route to a DLQ instead of dropping; currently log-and-drop.
 		}
 		batch = batch[:0]
 	}
@@ -54,7 +59,7 @@ func (w *BatchWriter) Run(ctx context.Context, in <-chan model.LogEntry) {
 	for {
 		select {
 		case <-ctx.Done():
-			// Shutdown: drain nốt những gì đang có trong channel rồi flush.
+			// Shutdown: drain whatever is still in the channel, then flush.
 			for {
 				select {
 				case e, ok := <-in:
@@ -86,9 +91,10 @@ func (w *BatchWriter) Run(ctx context.Context, in <-chan model.LogEntry) {
 	}
 }
 
-// appendGuarded ép invariant: KHÔNG ghi entry chưa redact. Đây là chốt chặn cuối
-// cùng — nếu vì lỗi lập trình nào đó một entry chưa qua redaction lọt tới đây,
-// ta drop và log to, thay vì persist secret.
+// appendGuarded enforces the invariant that an unredacted entry is NEVER
+// written. This is the last line of defence: if a programming error lets an
+// entry reach here without passing through redaction, we drop it and log loudly
+// rather than persist a secret.
 func (w *BatchWriter) appendGuarded(batch []model.LogEntry, e model.LogEntry) []model.LogEntry {
 	if !e.Redacted {
 		log.Printf("writer: BUG — dropping un-redacted entry (service=%s)", e.Service)
@@ -97,7 +103,8 @@ func (w *BatchWriter) appendGuarded(batch []model.LogEntry, e model.LogEntry) []
 	return append(batch, e)
 }
 
-// StubStore là store demo: chỉ đếm và in. Thay bằng ClickHouse thật ở tuần 5.
+// StubStore is a demo store that only counts and prints. Replace with a real
+// ClickHouse backend.
 type StubStore struct{}
 
 func (StubStore) WriteBatch(_ context.Context, batch []model.LogEntry) error {

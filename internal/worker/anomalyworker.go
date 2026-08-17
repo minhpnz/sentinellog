@@ -1,9 +1,11 @@
-// AnomalyWorker: lấy mẫu định kỳ số log lỗi theo (tenant, service) và đưa vào
-// Detector để phát hiện đột biến. Cùng pattern checkpoint offset như embed worker.
+// AnomalyWorker periodically samples the error-log count per (tenant, service)
+// and feeds it to the Detector to spot spikes. It uses the same checkpoint-offset
+// pattern as the embedding worker.
 //
-// Vì sao "log volume theo lỗi" là tín hiệu tốt: spike error-level là dấu hiệu
-// sớm của incident, rẻ để tính, và không cần metric pipeline riêng cho MVP. Ở
-// production ta cắm thêm tín hiệu thật (p99 latency, 5xx rate) vào cùng Detector.
+// Why error-log volume is a good signal: a spike in error-level logs is an early
+// indicator of an incident, it is cheap to compute, and it needs no separate
+// metrics pipeline for an MVP. Production would feed real signals (p99 latency,
+// 5xx rate) into the same Detector.
 package worker
 
 import (
@@ -51,7 +53,7 @@ func (w *AnomalyWorker) tick(ctx context.Context) {
 	if err != nil || len(entries) == 0 {
 		return
 	}
-	// Đếm log lỗi theo (tenant, service) trong cửa sổ poll này.
+	// Count error logs per (tenant, service) within this polling window.
 	type key struct{ tenant, service string }
 	counts := make(map[key]float64)
 	seen := make(map[key]bool)
@@ -62,8 +64,9 @@ func (w *AnomalyWorker) tick(ctx context.Context) {
 			counts[k]++
 		}
 	}
-	// Observe MỌI (tenant,service) thấy trong cửa sổ (kể cả count 0) để baseline
-	// học cả lúc bình thường — nếu chỉ observe khi có lỗi thì z-score vô nghĩa.
+	// Observe EVERY (tenant, service) seen in the window, including those with a
+	// count of zero, so the baseline also learns what normal looks like. Observing
+	// only when errors occur would make the z-score meaningless.
 	for k := range seen {
 		ev, isAnom := w.det.Observe(k.tenant, k.service, "error_volume", counts[k])
 		if isAnom {
