@@ -1,5 +1,6 @@
-// query/handler.go: HTTP cho tầng query. Mọi request phải mang token → Identity
-// (actor/tenant/role) đã xác thực; tenant/role KHÔNG BAO GIỜ lấy từ body.
+// HTTP surface for the query layer. Every request must carry a token that
+// resolves to an authenticated Identity (actor, tenant, role); tenant and role
+// are NEVER read from the request body.
 package query
 
 import (
@@ -13,14 +14,15 @@ import (
 	"github.com/minhpnz/sentinellog/internal/store"
 )
 
-// IdentityResolver map token thô -> Identity. Trả false nếu token không hợp lệ.
+// IdentityResolver maps a raw token to an Identity, returning false when the
+// token is invalid.
 type IdentityResolver func(rawToken string) (rbac.Identity, bool)
 
 type Handler struct {
 	Svc       *Service
 	Feed      *anomaly.Feed
 	Resolve   IdentityResolver
-	OnLatency func(endpoint string, ms float64) // hook metric (có thể nil)
+	OnLatency func(endpoint string, ms float64) // optional metrics hook; may be nil
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {

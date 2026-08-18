@@ -1,7 +1,8 @@
-// Command ingest khởi động SentinelLog: ingest gateway (hot path) + async workers
-// (embedding, anomaly) + query/AI layer, tất cả trong một binary cho dễ chạy demo.
+// Command ingest starts SentinelLog: the ingest gateway (hot path), the async
+// workers (embedding and anomaly detection), and the query/AI layer, all in a
+// single binary so it is easy to run and demo.
 //
-// Luồng dữ liệu:
+// Data flow:
 //
 //	HTTP ingest ─► auth ─► ratelimit ─► redact ─► buffer ─► batch writer ─► store(mem)
 //	                                                                          │
@@ -14,8 +15,8 @@
 //	                           /v1/why      ─ RAG: retrieve + cite + refuse-if-empty
 //	                           /v1/anomalies ─ feed (tenant-scoped)
 //
-// Graceful shutdown: signal → cancel ctx → đóng HTTP → đóng buffer → writer drain
-// → workers thoát. Không mất log đang trong buffer.
+// Graceful shutdown: signal → cancel the context → close HTTP → close the buffer
+// → let the writer drain → workers exit. Nothing sitting in the buffer is lost.
 package main
 
 import (
@@ -50,7 +51,7 @@ func main() {
 	cfg := config.Load()
 	reg := metrics.NewRegistry()
 
-	// --- Storage & AI backends (in-memory; thay bằng ClickHouse/pgvector ở prod) ---
+	// --- Storage and AI backends (in-memory; ClickHouse/pgvector in production) ---
 	logStore := store.NewMem()
 	emb := embed.NewHash(256)
 	vec := vector.NewMem()
@@ -61,7 +62,7 @@ func main() {
 
 	// --- Ingest hot path ---
 	auth := ingest.NewAuthenticator()
-	auth.AddToken("dev-token", "acme") // TODO: nạp từ DB + rotation
+	auth.AddToken("dev-token", "acme") // TODO: load from a database, with rotation
 	auth.AddToken("globex-token", "globex")
 
 	limiter := ratelimit.New(cfg.RatePerTenant, cfg.BurstPerTenant)
@@ -85,7 +86,7 @@ func main() {
 	}
 	seedKB(kbStore)
 
-	// Query identity: token -> (actor, tenant, role). Demo in-memory.
+	// Query identity: token -> (actor, tenant, role). In-memory for the demo.
 	identities := map[string]rbac.Identity{
 		"acme-admin":     {Actor: "alice", TenantID: "acme", Role: rbac.Admin},
 		"acme-responder": {Actor: "bob", TenantID: "acme", Role: rbac.Responder},
@@ -102,7 +103,7 @@ func main() {
 		OnLatency: func(ep string, ms float64) { reg.Observe("sl_query_latency_ms", ms) },
 	}
 
-	// --- Metrics gauges (đọc động, không giữ label cardinality cao) ---
+	// --- Metrics gauges (read dynamically, with no high-cardinality labels) ---
 	reg.SetGauge("sl_buffer_depth", func() float64 { return float64(buf.Depth()) })
 	reg.SetGauge("sl_buffer_accepted_total", func() float64 { return float64(buf.Accepted()) })
 	reg.SetGauge("sl_buffer_shed_total", func() float64 { return float64(buf.Shed()) })
@@ -162,13 +163,14 @@ func main() {
 	go func() { wg.Wait(); close(done) }()
 	select {
 	case <-done:
-		log.Println("drained cleanly, bye")
+		log.Println("drained cleanly, exiting")
 	case <-time.After(cfg.ShutdownTimeout):
 		log.Println("shutdown timeout, forcing exit")
 	}
 }
 
-// seedKB nạp vài runbook/postmortem demo để RAG có tri thức trả lời ngay.
+// seedKB loads a few demo runbooks and postmortems so RAG has knowledge to
+// answer from immediately.
 func seedKB(k *kb.Store) {
 	k.Add("acme", kb.Runbook, "Checkout 5xx spike runbook",
 		"When checkout returns 5xx: check payment gateway timeout, DB connection pool saturation, "+
