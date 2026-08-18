@@ -1,16 +1,18 @@
-// Package embed biến text thành vector để semantic search.
+// Package embed turns text into vectors for semantic search.
 //
-// Ở production ta gọi model thật (bge/e5 local hoặc OpenAI). Ở đây dùng
-// HashEmbedder — một "feature hashing" (hashing trick) thuần stdlib, DETERMINISTIC
-// và không cần mạng, để toàn bộ pipeline chạy/test được offline:
-//   - tách text thành token,
-//   - hash mỗi token vào một chiều của vector (dim cố định),
-//   - L2-normalize để cosine = dot product.
+// Production would call a real model (bge/e5 locally, or a hosted API). Here we
+// use HashEmbedder — feature hashing (the "hashing trick") in pure standard
+// library, DETERMINISTIC and requiring no network, so the whole pipeline runs and
+// tests offline:
+//   - split the text into tokens,
+//   - hash each token into one dimension of a fixed-size vector,
+//   - L2-normalise so cosine similarity reduces to a dot product.
 //
-// Nó KHÔNG thông minh như embedding thật (không hiểu đồng nghĩa), nhưng đủ để
-// minh hoạ và test đúng cơ chế: text giống nhau → vector giống nhau, chia sẻ
-// nhiều token → gần nhau. Interface Embedder cho phép thay bằng model thật mà
-// không đụng worker/query.
+// It is NOT as capable as a real embedding model — it has no notion of synonyms —
+// but it is enough to demonstrate and test the mechanism correctly: identical text
+// yields identical vectors, and text sharing many tokens lands nearby. The
+// Embedder interface allows swapping in a real model without touching the worker
+// or query layers.
 package embed
 
 import (
@@ -20,12 +22,12 @@ import (
 	"unicode"
 )
 
-// Embedder: text -> vector. Dim() để tầng vector biết kích thước.
+// Embedder maps text to a vector. Dim() tells the vector layer the size.
 type Embedder interface {
 	Embed(text string) []float32
 	Dim() int
-	// Version để đánh dấu embedding thuộc "spec" nào (phục vụ zero-downtime
-	// reindex khi đổi model — xem LedgerLens/arkon re-embedding).
+	// Version marks which embedding "spec" a vector belongs to, which is what makes
+	// a zero-downtime reindex possible when the model changes.
 	Version() string
 }
 
@@ -53,7 +55,8 @@ func (h *HashEmbedder) Embed(text string) []float32 {
 	return v
 }
 
-// tokenize: lowercase, tách theo ký tự không phải chữ/số, bỏ token quá ngắn.
+// tokenize lowercases, splits on non-alphanumeric characters, and drops very
+// short tokens.
 func tokenize(s string) []string {
 	fields := strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
@@ -67,8 +70,8 @@ func tokenize(s string) []string {
 	return out
 }
 
-// bucket ánh xạ token -> (chiều, dấu). Dùng dấu ±1 (signed hashing) để giảm va
-// chạm làm lệch một chiều.
+// bucket maps a token to (dimension, sign). Signed hashing (±1) keeps collisions
+// from systematically biasing a dimension in one direction.
 func bucket(tok string, dim int) (int, float32) {
 	hh := fnv.New32a()
 	_, _ = hh.Write([]byte(tok))
@@ -95,8 +98,8 @@ func l2normalize(v []float32) {
 	}
 }
 
-// Cosine similarity giữa hai vector đã normalize = dot product. Public để tầng
-// vector và test dùng chung.
+// Cosine similarity between two normalised vectors is just their dot product.
+// Exported so the vector layer and tests share one implementation.
 func Cosine(a, b []float32) float32 {
 	if len(a) != len(b) {
 		return 0

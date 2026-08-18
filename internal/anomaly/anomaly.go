@@ -1,15 +1,17 @@
-// Package anomaly phát hiện bất thường theo baseline động, per (tenant, service,
-// signal).
+// Package anomaly detects outliers against a moving baseline, per
+// (tenant, service, signal).
 //
-// Thuật toán: EWMA (exponentially weighted moving average) cho mean và một EWMA
-// cho phương sai → z-score = (x - mean) / stddev. |z| vượt ngưỡng → bất thường.
-// Vì sao EWMA thay vì trung bình cửa sổ cố định:
-//   - O(1) bộ nhớ/cập nhật (không giữ lịch sử) → scale tới hàng triệu chuỗi,
-//   - tự thích nghi baseline trôi theo thời gian (traffic ngày/đêm),
-//   - alpha điều chỉnh độ "nhớ": cao = phản ứng nhanh, thấp = ổn định.
+// The algorithm: an EWMA (exponentially weighted moving average) for the mean and
+// another for the variance, giving z = (x − mean) / stddev. A |z| above the
+// threshold is an anomaly. Why EWMA rather than a fixed-window average:
+//   - O(1) memory and update cost, with no history retained, so it scales to
+//     millions of series,
+//   - the baseline adapts as traffic drifts over time (day/night cycles),
+//   - alpha tunes how much it remembers: higher reacts faster, lower is steadier.
 //
-// Đây là lớp rẻ, chạy realtime để CHỌN LỌC cái gì đáng cho LLM triage (đắt) xem —
-// đúng pattern "lọc rẻ trước, xử lý đắt sau".
+// This is the cheap real-time layer that SELECTS what is worth sending to
+// expensive LLM triage — the "filter cheaply first, process expensively second"
+// pattern.
 package anomaly
 
 import (
@@ -20,7 +22,7 @@ import (
 
 type baseline struct {
 	mean    float64
-	varc    float64 // EWMA của bình phương độ lệch
+	varc    float64 // EWMA of the squared deviation
 	count   int
 	updated time.Time
 }
@@ -35,9 +37,9 @@ type Event struct {
 }
 
 type Detector struct {
-	alpha  float64 // hệ số EWMA (0..1)
-	zThres float64 // ngưỡng |z| để coi là bất thường
-	warmup int     // số mẫu tối thiểu trước khi phát cảnh báo (tránh báo sớm)
+	alpha  float64 // EWMA coefficient (0..1)
+	zThres float64 // |z| threshold above which a value counts as anomalous
+	warmup int     // minimum samples before alerting, to avoid firing too early
 
 	mu   sync.Mutex
 	base map[string]*baseline
@@ -56,8 +58,8 @@ func New(alpha, zThreshold float64, warmup int) *Detector {
 	return &Detector{alpha: alpha, zThres: zThreshold, warmup: warmup, base: make(map[string]*baseline)}
 }
 
-// Observe cập nhật baseline với giá trị mới và trả về (Event, true) nếu bất thường.
-// signal ví dụ: "error_rate", "latency_ms", "log_volume".
+// Observe updates the baseline with a new value and returns (Event, true) when it
+// is anomalous. Example signals: "error_rate", "latency_ms", "log_volume".
 func (d *Detector) Observe(tenantID, service, signal string, value float64) (Event, bool) {
 	key := tenantID + "\x00" + service + "\x00" + signal
 	now := time.Now().UTC()
@@ -71,15 +73,16 @@ func (d *Detector) Observe(tenantID, service, signal string, value float64) (Eve
 		return Event{}, false
 	}
 
-	// z-score TRƯỚC khi cập nhật (so với baseline hiện tại).
+	// Compute the z-score BEFORE updating, against the current baseline.
 	std := math.Sqrt(b.varc)
 	var z float64
 	switch {
 	case std > 1e-9:
 		z = (value - b.mean) / std
 	case math.Abs(value-b.mean) > 1e-9:
-		// Baseline phương sai ~0 (tín hiệu hằng) nhưng giá trị lệch hẳn → coi là
-		// bất thường mạnh. Không để div-by-zero nuốt mất một jump rõ ràng.
+		// The baseline variance is ~0 (a constant signal) but the value has clearly
+		// moved, so treat it as strongly anomalous. A division by zero must not
+		// swallow an obvious jump.
 		if value > b.mean {
 			z = d.zThres + 1
 		} else {
@@ -87,7 +90,7 @@ func (d *Detector) Observe(tenantID, service, signal string, value float64) (Eve
 		}
 	}
 
-	// Cập nhật EWMA mean & variance (West's / EWMA variance).
+	// Update the EWMA mean and variance.
 	diff := value - b.mean
 	b.mean += d.alpha * diff
 	b.varc = (1 - d.alpha) * (b.varc + d.alpha*diff*diff)
@@ -103,7 +106,7 @@ func (d *Detector) Observe(tenantID, service, signal string, value float64) (Eve
 	return Event{}, false
 }
 
-// Baselines trả số chuỗi đang theo dõi (metric).
+// Baselines returns the number of series currently tracked (a metric).
 func (d *Detector) Baselines() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()

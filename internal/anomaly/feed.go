@@ -2,10 +2,11 @@ package anomaly
 
 import "sync"
 
-// Feed là ring buffer các Event gần đây, đọc TENANT-SCOPED.
+// Feed is a ring buffer of recent events, read TENANT-SCOPED.
 //
-// Giữ trần cố định (cap) để không phình bộ nhớ — anomaly cũ ít giá trị. Đọc luôn
-// lọc theo tenant để không lộ bất thường của tenant khác.
+// It keeps a fixed cap so memory cannot grow without bound — old anomalies have
+// little value. Reads always filter by tenant, so one tenant never sees another's
+// anomalies.
 type Feed struct {
 	mu     sync.RWMutex
 	events []Event
@@ -28,7 +29,7 @@ func (f *Feed) Push(e Event) {
 	}
 }
 
-// Recent trả tối đa n event mới nhất của tenant (mới nhất trước).
+// Recent returns up to n of the tenant's most recent events, newest first.
 func (f *Feed) Recent(tenantID string, n int) []Event {
 	if n <= 0 {
 		n = 50

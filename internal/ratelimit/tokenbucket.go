@@ -1,11 +1,10 @@
-// Package ratelimit hiện thực token bucket per-key (per-tenant), lazy-refill.
+// Package ratelimit implements a per-key (per-tenant) token bucket with lazy refill.
 //
-// "Lazy refill" nghĩa là KHÔNG có goroutine nền cho mỗi tenant (không scale tới
-// hàng triệu key). Mỗi lần Allow(), ta tính lượng token nạp thêm dựa trên thời
-// gian trôi qua kể từ lần gọi trước. Dùng monotonic clock (time.Now trong Go đã
-// mang monotonic reading) để không bị ảnh hưởng khi wall-clock nhảy.
-//
-// Đây chính là bài coding #1 trong coding-dsa-sre.md — implement thật ở đây.
+// "Lazy refill" means there is NO background goroutine per tenant, which would
+// never scale to millions of keys. Instead, each Allow() computes how many tokens
+// to add from the time elapsed since the previous call. It relies on the
+// monotonic clock (Go's time.Now carries a monotonic reading) so a wall-clock
+// jump cannot distort the rate.
 package ratelimit
 
 import (
@@ -18,10 +17,10 @@ type bucket struct {
 	lastSeen time.Time
 }
 
-// Limiter thread-safe, chia shard theo key để giảm lock contention.
+// Limiter is safe for concurrent use, keyed per tenant.
 type Limiter struct {
-	rate  float64 // token nạp mỗi giây
-	burst float64 // trần token (cho phép burst)
+	rate  float64 // tokens added per second
+	burst float64 // token ceiling, which is what allows bursts
 	ttl   time.Duration
 
 	mu      sync.Mutex
@@ -37,8 +36,8 @@ func New(ratePerSec float64, burst int) *Limiter {
 	}
 }
 
-// Allow trả về true nếu request cho key này được phép (còn token).
-// O(1), lazy refill.
+// Allow reports whether a request for this key is permitted (tokens remain).
+// O(1), with lazy refill.
 func (l *Limiter) Allow(key string) bool {
 	now := time.Now()
 
@@ -47,12 +46,12 @@ func (l *Limiter) Allow(key string) bool {
 
 	b, ok := l.buckets[key]
 	if !ok {
-		// Key mới: khởi tạo đầy burst (cho phép burst ngay lần đầu).
+		// A new key starts with a full burst allowance, so the first burst is permitted.
 		l.buckets[key] = &bucket{tokens: l.burst - 1, lastSeen: now}
 		return true
 	}
 
-	// Nạp token theo thời gian trôi qua, cap ở burst.
+	// Refill from elapsed time, capped at the burst ceiling.
 	elapsed := now.Sub(b.lastSeen).Seconds()
 	b.tokens += elapsed * l.rate
 	if b.tokens > l.burst {
@@ -67,8 +66,8 @@ func (l *Limiter) Allow(key string) bool {
 	return false
 }
 
-// Sweep xoá các bucket idle lâu hơn ttl để map không phình vô hạn.
-// Gọi định kỳ (xem StartSweeper).
+// Sweep removes buckets idle for longer than the TTL, so the map cannot grow
+// without bound. Call it periodically (see StartSweeper).
 func (l *Limiter) Sweep() {
 	cutoff := time.Now().Add(-l.ttl)
 	l.mu.Lock()
@@ -80,7 +79,7 @@ func (l *Limiter) Sweep() {
 	}
 }
 
-// StartSweeper chạy Sweep định kỳ tới khi done đóng.
+// StartSweeper runs Sweep periodically until done is closed.
 func (l *Limiter) StartSweeper(done <-chan struct{}, every time.Duration) {
 	t := time.NewTicker(every)
 	defer t.Stop()
