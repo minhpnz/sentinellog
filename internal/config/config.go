@@ -1,4 +1,4 @@
-// Package config nạp cấu hình từ biến môi trường (12-factor).
+// Package config loads configuration from environment variables (12-factor).
 package config
 
 import (
@@ -9,16 +9,16 @@ import (
 
 type Config struct {
 	ListenAddr      string        // SL_LISTEN_ADDR
-	BufferSize      int           // SL_BUFFER_SIZE   — trần backpressure
-	BatchSize       int           // SL_BATCH_SIZE    — số entry/flush
-	BatchInterval   time.Duration // SL_BATCH_INTERVAL— flush tối đa mỗi khoảng
-	RatePerTenant   float64       // SL_RATE          — events/giây/tenant
-	BurstPerTenant  int           // SL_BURST         — burst cho token bucket
-	MaxBodyBytes    int64         // SL_MAX_BODY      — chống body quá lớn
+	BufferSize      int           // SL_BUFFER_SIZE    - backpressure ceiling
+	BatchSize       int           // SL_BATCH_SIZE     - entries per flush
+	BatchInterval   time.Duration // SL_BATCH_INTERVAL - maximum time between flushes
+	RatePerTenant   float64       // SL_RATE           - events per second per tenant
+	BurstPerTenant  int           // SL_BURST          - token bucket burst allowance
+	MaxBodyBytes    int64         // SL_MAX_BODY       - guards against oversized bodies
 	ShutdownTimeout time.Duration // SL_SHUTDOWN_TIMEOUT
 }
 
-// Load trả về config với default hợp lý cho dev; override bằng env.
+// Load returns a config with sensible development defaults, overridable by env.
 func Load() Config {
 	return Config{
 		ListenAddr:      env("SL_LISTEN_ADDR", ":8080"),

@@ -6,19 +6,20 @@ import (
 	"strconv"
 )
 
-// StoredEntry là một LogEntry đã được persist, kèm ID do store cấp.
+// StoredEntry is a persisted LogEntry together with the ID the store assigned.
 //
-// ID là số nguyên tăng dần toàn cục (giống offset của log/Kafka). Async worker
-// dùng ID làm CHECKPOINT: nó nhớ "đã xử lý tới ID nào" và chỉ đọc entry mới hơn
-// — đây là cách làm resumable pipeline không cần queue riêng (poll + offset,
-// tương tự SELECT ... WHERE id > :last).
+// The ID is a globally increasing integer, much like a Kafka offset. Async
+// workers use it as a CHECKPOINT: each remembers the highest ID it has processed
+// and only reads newer entries. That is how the pipeline stays resumable without
+// a separate queue (poll plus offset, equivalent to SELECT ... WHERE id > :last).
 type StoredEntry struct {
 	ID uint64
 	LogEntry
 }
 
-// ContentHash trả về hash ổn định của nội dung entry, dùng để DEDUP ở embedding
-// worker: hai entry giống hệt nội dung không cần embed hai lần (idempotency).
+// ContentHash returns a stable hash of the entry's content, used for DEDUP in the
+// embedding worker: two entries with identical content are embedded only once,
+// which is what makes replay idempotent.
 func (e *LogEntry) ContentHash() string {
 	h := sha256.New()
 	h.Write([]byte(e.TenantID))
@@ -30,5 +31,5 @@ func (e *LogEntry) ContentHash() string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// Ref là con trỏ ổn định tới một log entry để trích dẫn (citation) trong RAG.
+// Ref is a stable pointer to a log entry, used for citations in RAG answers.
 func (e *StoredEntry) Ref() string { return "log:" + strconv.FormatUint(e.ID, 10) }

@@ -1,9 +1,11 @@
-// Package kb là Incident Knowledge Base: runbook + postmortem, tenant-scoped.
+// Package kb is the incident knowledge base: runbooks and postmortems, scoped per
+// tenant.
 //
-// Đây là "tri thức incident cũ" mà RAG kéo về để trả lời "why did X fail". Khi
-// thêm một doc, ta embed ngay và đẩy vào vector store (nguồn = runbook/postmortem)
-// để semantic search tìm được — cùng một index với log embedding, phân biệt bằng
-// SourceType. Tất cả có tenant_id để không lộ tri thức chéo tenant.
+// This is the accumulated knowledge from past incidents that RAG retrieves to
+// answer "why did X fail". Adding a document embeds it immediately and pushes it
+// into the vector store, so semantic search can find it — the same index as log
+// embeddings, distinguished by SourceType. Everything carries a tenant ID so
+// knowledge never leaks across tenants.
 package kb
 
 import (
@@ -46,7 +48,8 @@ func New(emb embed.Embedder, vec vector.Store) *Store {
 	return &Store{docs: make(map[uint64]Doc), emb: emb, vec: vec}
 }
 
-// Add lưu doc, embed và index ngay (đồng bộ — KB nhỏ, không cần async như log).
+// Add stores a document and embeds and indexes it immediately. This is
+// synchronous because the knowledge base is small, unlike the log stream.
 func (s *Store) Add(tenantID string, kind Kind, title, content string, tags ...string) Doc {
 	id := s.nextID.Add(1)
 	d := Doc{ID: id, TenantID: tenantID, Kind: kind, Title: title, Content: content, Tags: tags}
@@ -64,7 +67,7 @@ func (s *Store) Add(tenantID string, kind Kind, title, content string, tags ...s
 	return d
 }
 
-// GetByRef phân giải "kb:runbook:5" -> Doc (có scope tenant).
+// GetByRef resolves a reference such as "kb:runbook:5" to a Doc, scoped by tenant.
 func (s *Store) GetByRef(tenantID, ref string) (Doc, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

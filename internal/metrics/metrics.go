@@ -1,14 +1,16 @@
-// Package metrics expose số liệu dạng Prometheus text (không cần client library —
-// giữ nguyên tắc stdlib-first). Đủ để Prometheus scrape /metrics.
+// Package metrics exposes Prometheus text-format metrics without a client
+// library, keeping the standard-library-first constraint. It is enough for
+// Prometheus to scrape /metrics.
 //
-// Bài học observability nhúng ở đây (CORE-F):
-//   - Counter (chỉ tăng: ingested, shed, redactions, embedded, dlq, queries) vs
-//     Gauge (lên/xuống: buffer_depth, baselines, vectors).
-//   - Latency đo bằng histogram thô (bucket) — KHÔNG trung bình p95 giữa các
-//     instance; muốn p95 toàn cục phải cộng bucket rồi mới tính (lý do dùng
-//     histogram thay vì lưu sẵn p95).
-//   - TRÁNH nổ cardinality: KHÔNG gắn label chứa tenant_id/user_id vào metric ở
-//     đây (sẽ tạo vô số chuỗi). Tenant-level để tính trong log/trace, không metric.
+// The observability decisions embedded here:
+//   - Counters only ever increase (ingested, shed, redactions, embedded, dlq,
+//     queries), while gauges move both ways (buffer_depth, baselines, vectors).
+//   - Latency uses raw histogram buckets. Never average p95 across instances: a
+//     global p95 requires summing the buckets first and computing from those,
+//     which is exactly why buckets are stored rather than a precomputed p95.
+//   - Cardinality is kept bounded: no tenant_id or user_id labels on metrics
+//     here, since those would create unbounded series. Per-tenant breakdowns
+//     belong in logs and traces, not metrics.
 package metrics
 
 import (
@@ -36,14 +38,15 @@ func (r *Registry) counter(name string) *atomic.Uint64 {
 	return v.(*atomic.Uint64)
 }
 
-// Inc tăng counter theo tên.
+// Inc increments a counter by name.
 func (r *Registry) Inc(name string)           { r.counter(name).Add(1) }
 func (r *Registry) Add(name string, n uint64) { r.counter(name).Add(n) }
 
-// SetGauge đăng ký một gauge lấy giá trị động (vd buffer depth).
+// SetGauge registers a gauge that reads its value dynamically (buffer depth,
+// for example).
 func (r *Registry) SetGauge(name string, f func() float64) { r.gauges.Store(name, f) }
 
-// Observe ghi một giá trị latency (ms) vào histogram.
+// Observe records a latency value in milliseconds into a histogram.
 func (r *Registry) Observe(name string, ms float64) {
 	r.mu.Lock()
 	h, ok := r.hist[name]
@@ -55,7 +58,7 @@ func (r *Registry) Observe(name string, ms float64) {
 	h.observe(ms)
 }
 
-// Render sinh text Prometheus.
+// Render produces the Prometheus text output.
 func (r *Registry) Render() string {
 	var b strings.Builder
 
@@ -89,8 +92,8 @@ func (r *Registry) Render() string {
 	return b.String()
 }
 
-// histogram: bucket cố định (ms). Cộng bucket từ nhiều instance rồi mới tính
-// percentile (đúng toán học histogram).
+// histogram uses fixed buckets in milliseconds. Percentiles are computed after
+// summing buckets across instances, which is the mathematically correct order.
 type histogram struct {
 	mu     sync.Mutex
 	bounds []float64
