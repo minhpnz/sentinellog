@@ -3,8 +3,7 @@
 An **end-to-end runnable** build of SentinelLog: hot-path ingest + redaction,
 async workers (embedding + anomaly detection), and a query/AI layer (structured
 search, semantic search, and RAG with citations) — all on the **standard library,
-with no external dependencies**, so it is easy to run, demo and read. Design
-notes and the reasoning behind each pattern live in `LESSONS.md`.
+with no external dependencies**, so it is easy to run, demo and read.
 
 Storage backends are currently in-memory (store/vector). The interfaces are
 already separated so they can be swapped for ClickHouse/pgvector without touching
