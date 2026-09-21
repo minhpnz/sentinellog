@@ -8,7 +8,7 @@ notes and the reasoning behind each pattern live in `LESSONS.md`.
 
 Storage backends are currently in-memory (store/vector). The interfaces are
 already separated so they can be swapped for ClickHouse/pgvector without touching
-the layers above (see `LESSONS.md` §7).
+the layers above.
 
 ## Quick start
 
